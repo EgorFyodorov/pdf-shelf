@@ -43,11 +43,12 @@ def _fmt_summary(entry: dict[str, Any]) -> str:
     vol = r.get("volume", {})
     cmpx = r.get("complexity", {})
     cat = r.get("category", {})
+    basis = cat.get("basis")
     return (
         f"[OK] {entry['file']} | lang={r.get('doc_language')} "
         f"pages={vol.get('page_count')} words={vol.get('word_count')} "
         f"t={vol.get('reading_time_min')}m | complexity={cmpx.get('level')}({cmpx.get('score')}) "
-        f"| category={cat.get('label')}({cat.get('score')})"
+        f"| category={cat.get('label')}({cat.get('score')}) basis={basis}"
     )
 
 

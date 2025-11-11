@@ -4,7 +4,12 @@ import asyncio
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
-from project.mcp_pdf.tools import analyze_text_tool, extract_pdf_tool
+from project.mcp_pdf.tools import (
+    analyze_text_tool,
+    extract_pdf_tool,
+    classify_or_create_category_tool,
+    define_category_tool,
+)
 
 
 # --- Exceptions -------------------------------------------------------------
@@ -94,6 +99,46 @@ async def analyze_pdf_url(url: str, *, timeout: float | None = 60.0) -> dict[str
         raise PDFAnalysisError("URL must start with http:// or https://")
     text, meta = await extract_pdf(url=url, timeout=timeout)
     return await analyze_text(text, meta, timeout=timeout)
+
+
+# ----------------- Dynamic categories (wrappers over MCP tools) -------------
+
+
+async def classify_or_create_category(
+    text: str,
+    meta: Optional[dict[str, Any]] = None,
+    *,
+    existing_categories: Optional[list[dict]] = None,
+    timeout: float | None = 60.0,
+) -> dict[str, Any]:
+    """LLM-процедура: попытаться классифицировать в существующие категории или создать новую.
+
+    existing_categories: список объектов {label, description?, keywords?}.
+    Возвращает JSON по CATEGORY_DECISION_SCHEMA.
+    """
+    try:
+        coro = classify_or_create_category_tool(text=text, meta=meta, existing_categories=existing_categories)
+        return await asyncio.wait_for(coro, timeout=timeout) if timeout else await coro
+    except asyncio.TimeoutError as e:
+        raise LLMError("Operation timed out during category decision") from e
+    except Exception as e:
+        raise LLMError(str(e)) from e
+
+
+async def define_category(
+    text: str,
+    meta: Optional[dict[str, Any]] = None,
+    *,
+    timeout: float | None = 60.0,
+) -> dict[str, Any]:
+    """LLM-процедура: создать новую категорию по одному документу."""
+    try:
+        coro = define_category_tool(text=text, meta=meta)
+        return await asyncio.wait_for(coro, timeout=timeout) if timeout else await coro
+    except asyncio.TimeoutError as e:
+        raise LLMError("Operation timed out during category definition") from e
+    except Exception as e:
+        raise LLMError(str(e)) from e
 
 
 __all__ = [

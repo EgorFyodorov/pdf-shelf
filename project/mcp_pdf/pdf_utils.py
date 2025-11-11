@@ -3,7 +3,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Iterable
 from urllib.parse import urlparse, unquote
 
 import aiohttp
@@ -27,6 +27,7 @@ class Extracted:
     source_name: Optional[str]
     reading_time_breakdown: Optional[dict] = None
     reading_time_min_host: Optional[float] = None
+    toc_preview: Optional[str] = None
 
 
 async def _download_bytes(url: str, timeout: int = 20) -> bytes:
@@ -93,6 +94,14 @@ def _read_pdf_bytes(data: bytes, source_name: Optional[str]) -> Extracted:
     except Exception as e:
         logger.debug("Reading-time metrics error, fallback to heuristic words: %s", e)
 
+    # Извлечение оглавления/заголовков (TOC preview)
+    toc_preview: Optional[str] = None
+    try:
+        if _should_include_toc():
+            toc_preview = _build_toc_preview(reader)
+    except Exception as e:
+        logger.debug("TOC preview extraction failed: %s", e)
+
     return Extracted(
         text=combined,
         page_count=total_pages,
@@ -102,6 +111,7 @@ def _read_pdf_bytes(data: bytes, source_name: Optional[str]) -> Extracted:
         source_name=source_name,
         reading_time_breakdown=reading_breakdown,
         reading_time_min_host=reading_total_min,
+        toc_preview=toc_preview,
     )
 
 
@@ -211,3 +221,129 @@ def avg_chars_per_word_from_first_page(first_page_text: str, w1: int) -> float:
 
 
 # Категоризация по ключевым словам намеренно удалена согласно требованию.
+
+
+# ----------------------- TOC extraction helpers -----------------------------
+
+def _should_include_toc() -> bool:
+    return str(os.getenv("PDF_MCP_INCLUDE_TOC", "true")).strip().lower() != "false"
+
+
+def _toc_pages_limit() -> int:
+    try:
+        return max(1, int(os.getenv("PDF_MCP_TOC_PAGES", "3")))
+    except Exception:
+        return 3
+
+
+def _toc_chars_limit() -> int:
+    try:
+        return max(200, int(os.getenv("PDF_MCP_TOC_LIMIT", "2000")))
+    except Exception:
+        return 2000
+
+
+def _flatten_outlines(items: Iterable) -> list[str]:
+    lines: list[str] = []
+    stack = list(items) if items is not None else []
+    while stack:
+        it = stack.pop(0)
+        try:
+            # pypdf Destination or dict-like
+            title = None
+            if hasattr(it, "title"):
+                title = getattr(it, "title")
+            elif isinstance(it, dict) and it.get("/Title"):
+                title = str(it.get("/Title"))
+            elif isinstance(it, str):
+                title = it
+            if title:
+                title = _normalize_spaces(str(title))
+                if title:
+                    lines.append(title)
+            # Children
+            kids = None
+            if hasattr(it, "children"):
+                kids = getattr(it, "children")
+            elif isinstance(it, dict) and it.get("/First"):
+                kids = [it.get("/First")]
+            if kids:
+                # ensure iterable
+                try:
+                    stack[0:0] = list(kids)
+                except Exception:
+                    pass
+        except Exception:
+            continue
+    return lines
+
+
+_HDR_NUM_RE = re.compile(r"^\s*(?:\d+\.){1,3}\s+.+")
+_DOTS_PAGE_RE = re.compile(r"^.+\.{3,}\s*\d+\s*$")
+
+
+def _extract_titles_from_pages(reader: PdfReader, limit_pages: int) -> list[str]:
+    lines: list[str] = []
+    pages = min(limit_pages, len(reader.pages) if reader.pages is not None else 0)
+    for i in range(pages):
+        try:
+            text = reader.pages[i].extract_text() or ""
+        except Exception as e:
+            logger.debug("TOC: page extract failed p%s: %s", i + 1, e)
+            continue
+        for raw in text.splitlines():
+            s = _normalize_spaces(raw)
+            if not s or len(s) < 4:
+                continue
+            if s.lower() in ("contents", "table of contents", "содержание"):
+                lines.append(s)
+                continue
+            # числовые заголовки или строки с точками и номером страницы
+            if _HDR_NUM_RE.match(s) or _DOTS_PAGE_RE.match(s):
+                lines.append(s)
+                continue
+            # сильный заголовок: много заглавных букв, мало знаков пунктуации
+            upper_ratio = sum(1 for ch in s if ch.isupper()) / max(1, len(s))
+            if upper_ratio > 0.5 and len(s) <= 120:
+                lines.append(s)
+    # Дедупликация, ограничение длины строки
+    seen = set()
+    norm_lines: list[str] = []
+    for s in lines:
+        key = s.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if len(s) > 160:
+            s = s[:157] + "…"
+        norm_lines.append(s)
+    return norm_lines
+
+
+def _build_toc_preview(reader: PdfReader) -> str:
+    limit_chars = _toc_chars_limit()
+    # 1) попытка извлечь outlines
+    outlines = None
+    for attr in ("outline", "outlines"):
+        try:
+            outlines = getattr(reader, attr)
+            if outlines:
+                break
+        except Exception:
+            continue
+    lines: list[str] = []
+    if outlines:
+        try:
+            lines = _flatten_outlines(outlines)
+        except Exception as e:
+            logger.debug("TOC: outlines flatten failed: %s", e)
+            lines = []
+    # 2) фолбэк по первым страницам
+    if not lines:
+        lines = _extract_titles_from_pages(reader, _toc_pages_limit())
+    if not lines:
+        return ""
+    preview = "\n".join(lines)
+    if len(preview) > limit_chars:
+        preview = preview[: limit_chars - 1] + "…"
+    return preview
