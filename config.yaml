@@ -1,0 +1,13 @@
+app:
+  name: pdf-shelf-bot
+bot:
+  bot_token: ""
+logger:
+  format: "[%(asctime)s][%(process)s][%(levelname)s][%(name)s] %(message)s"
+  level: INFO
+postgres:
+  user: bot_user
+  password: bot_password
+  database: bot_db
+  host: pdf-shelf-postgres
+  port: 5432

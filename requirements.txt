@@ -1,0 +1,6 @@
+aiohttp==3.11.11
+aiogram==3.17.0
+SQLAlchemy==2.0.36
+asyncpg==0.29.0
+PyYAML==6.0.2
+python-dotenv==1.0.1

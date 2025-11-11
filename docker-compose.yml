@@ -1,0 +1,40 @@
+version: "3.9"
+
+services:
+  pdf-shelf-postgres:
+    image: postgres:16
+    container_name: pdf_shelf_postgres
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+    ports:
+      - "5436:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d ${POSTGRES_DB} -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  pdf-shelf-bot:
+    build: .
+    container_name: pdf_shelf_bot
+    depends_on:
+      pdf-shelf-postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+    restart: unless-stopped
+
+volumes:
+  pgdata:
