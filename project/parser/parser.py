@@ -33,7 +33,7 @@ class ParsingError(ParserError):
 class Parser:
     def __init__(
         self,
-        timeout: int = 30000,
+        timeout: int = 120000,
         wait_until: str = "networkidle",
         pdf_format: str = "A4",
     ):
