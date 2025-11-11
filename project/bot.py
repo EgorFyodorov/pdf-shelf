@@ -2,9 +2,9 @@ import logging
 
 from aiogram import Bot, Dispatcher
 
-from project.schemas.config_schemas import Config
 from project.database.engine import init_engine, verify_connection
 from project.handlers.main_handlers import router
+from project.schemas.config_schemas import Config
 
 logger = logging.getLogger(__name__)
 

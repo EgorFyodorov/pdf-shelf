@@ -1,4 +1,4 @@
-.PHONY: build up down run logs ps restart migrate
+.PHONY: build up down run logs ps restart migrate shell-bot shell-db psql dev-restart
 
 COMPOSE ?= docker compose
 
@@ -9,18 +9,27 @@ up:
 	$(COMPOSE) up -d
 
 run:
-	$(COMPOSE) up bot
+	$(COMPOSE) up pdf-shelf-bot
 
 down:
 	$(COMPOSE) down
 
 logs:
-	$(COMPOSE) logs -f bot
+	$(COMPOSE) logs -f pdf-shelf-bot
 
 ps:
 	$(COMPOSE) ps
 
 restart: down up
 
-migrate:
-	$(COMPOSE) run --rm bot python scripts/apply_migrations.py
+shell-bot:
+	docker exec -it pdf_shelf_bot /bin/bash
+
+shell-db:
+	docker exec -it pdf_shelf_postgres /bin/bash
+
+psql:
+	docker exec -it pdf_shelf_postgres psql -U bot_user -d postgres
+
+dev-restart:
+	$(COMPOSE) restart pdf-shelf-bot

@@ -7,8 +7,8 @@ from dotenv import load_dotenv
 from project.config import Config, load_config
 
 BASE_DIR = Path(__file__).parent.parent
-ENV_PATH = BASE_DIR / '.env'
-CONFIG_PATH = BASE_DIR / 'config.yaml'
+ENV_PATH = BASE_DIR / ".env"
+CONFIG_PATH = BASE_DIR / "config.yaml"
 
 if ENV_PATH.exists():
     load_dotenv(ENV_PATH)

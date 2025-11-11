@@ -3,11 +3,7 @@ from typing import Tuple
 from urllib.parse import quote_plus
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import (
-    AsyncEngine,
-    async_sessionmaker,
-    create_async_engine,
-)
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from project.schemas.config_schemas import PostgresSection
 
@@ -18,7 +14,7 @@ _session_maker: async_sessionmaker | None = None
 
 
 def build_connection_url(postgres: PostgresSection) -> str:
-    password = quote_plus(postgres.password or '')
+    password = quote_plus(postgres.password or "")
     return (
         f"postgresql+asyncpg://{postgres.user}:{password}"
         f"@{postgres.host}:{postgres.port}/{postgres.database}"
@@ -51,5 +47,7 @@ async def verify_connection(engine: AsyncEngine):
 
 def get_sessionmaker() -> async_sessionmaker:
     if not _session_maker:
-        raise RuntimeError("Database sessionmaker is not initialized. Call init_engine first.")
+        raise RuntimeError(
+            "Database sessionmaker is not initialized. Call init_engine first."
+        )
     return _session_maker
