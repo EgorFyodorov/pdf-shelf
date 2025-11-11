@@ -14,8 +14,8 @@ if TYPE_CHECKING:  # for type checkers only
     from project.schemas.config_schemas import Config as _ConfigType  # noqa: F401
 
 BASE_DIR = Path(__file__).parent.parent
-ENV_PATH = BASE_DIR / '.env'
-CONFIG_PATH = BASE_DIR / 'config.yaml'
+ENV_PATH = BASE_DIR / ".env"
+CONFIG_PATH = BASE_DIR / "config.yaml"
 
 
 def load_env_file(env_path: Path):

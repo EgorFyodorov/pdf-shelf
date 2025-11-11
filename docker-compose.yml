@@ -34,6 +34,11 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_HOST: ${POSTGRES_HOST}
       POSTGRES_PORT: ${POSTGRES_PORT}
+    volumes:
+      - ./project:/app/project
+      - ./bot.py:/app/bot.py
+      - ./config.yaml:/app/config.yaml
+      - ./output:/app/output
     restart: unless-stopped
 
 volumes:

@@ -2,11 +2,14 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential && \
-    rm -rf /var/lib/apt/lists/*
+COPY system-deps.txt .
+RUN apt-get update && \
+    xargs -a system-deps.txt apt-get install -y --no-install-recommends && \
+    rm -rf /var/lib/apt/lists/* system-deps.txt
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+RUN playwright install chromium
 
 COPY . .
 
