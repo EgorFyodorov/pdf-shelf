@@ -2,7 +2,7 @@ import logging
 
 from aiogram import Router
 from aiogram.filters import Command
-from aiogram.types import Message, Document
+from aiogram.types import Document, Message
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from project.database.pdf_repository import PDFRepository
@@ -34,33 +34,32 @@ async def pdf_handler(msg: Message, sessionmaker: async_sessionmaker):
     if sender is None:
         await msg.answer("Не удалось определить отправителя.")
         return
-    
+
     pdf_repo = PDFRepository(sessionmaker)
-    
+
     if msg.document:
         document: Document = msg.document
-        
-        if not document.mime_type or not document.mime_type.startswith('application/pdf'):
+
+        if not document.mime_type or not document.mime_type.startswith(
+            "application/pdf"
+        ):
             await msg.answer("Пожалуйста, отправьте PDF файл.")
             return
-        
+
         await pdf_repo.log_pdf_upload(
             user_id=sender.id,
             filename=document.file_name or "unknown.pdf",
             file_id=document.file_id,
-            file_size=document.file_size or 0
+            file_size=document.file_size or 0,
         )
-        
+
         await msg.answer(f"PDF файл '{document.file_name}' получен и обработан!")
-        
+
     elif msg.text:
         text = msg.text.strip()
-        
-        if text.startswith(('http://', 'https://')):
-            await pdf_repo.log_pdf_url(
-                user_id=sender.id,
-                url=text
-            )
+
+        if text.startswith(("http://", "https://")):
+            await pdf_repo.log_pdf_url(user_id=sender.id, url=text)
             await msg.answer(f"URL получен и обработан: {text}")
         else:
             await msg.answer("Пожалуйста, отправьте PDF файл или URL ссылку.")

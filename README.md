@@ -1,4 +1,4 @@
-# casinot-bot-v1
+# pdf-shelf-bot
 
 ## Настройка окружения
 1. Скопируйте `.env.example` в `.env` и укажите значения (`BOT_TOKEN`, параметры Postgres и путь к логам).
