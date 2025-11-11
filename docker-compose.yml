@@ -38,6 +38,7 @@ services:
       - ./project:/app/project
       - ./bot.py:/app/bot.py
       - ./config.yaml:/app/config.yaml
+      - ./output:/app/output
     restart: unless-stopped
 
 volumes:
