@@ -418,7 +418,7 @@ analysis_json->'category'->>'label'    -- категория
 # Псевдокод
 files = await file_repo.get_files_by_user_filtered(
     user_id=user_id,
-    tags=["ML"] if tags else None,  # Фильтр по topics[].label
+    tags=["ML"] if tags else None,  # Фильтр по полю tags (TEXT[])
     exclude_requested=True           # Исключить уже выданные файлы
 )
 
