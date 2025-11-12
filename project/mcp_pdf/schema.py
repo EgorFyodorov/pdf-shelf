@@ -82,7 +82,14 @@ ANALYSIS_JSON_SCHEMA: dict = {
             "required": ["short_or_noisy_input", "comments"],
         },
     },
-    "required": ["doc_language", "volume", "complexity", "topics", "category", "limitations"],
+    "required": [
+        "doc_language",
+        "volume",
+        "complexity",
+        "topics",
+        "category",
+        "limitations",
+    ],
 }
 
 
@@ -138,13 +145,18 @@ CATEGORY_DECISION_SCHEMA: dict = {
 }
 
 
-def build_category_prompt(text: str, meta: dict, existing_categories: list[dict] | None) -> str:
+def build_category_prompt(
+    text: str, meta: dict, existing_categories: list[dict] | None
+) -> str:
     toc = meta.get("toc_preview")
     source_name = meta.get("source_name")
-    desc_existing = "\n".join(
-        f"- {e.get('label')}: {e.get('description','')} | keywords={e.get('keywords', [])}"
-        for e in (existing_categories or [])
-    ) or "<none>"
+    desc_existing = (
+        "\n".join(
+            f"- {e.get('label')}: {e.get('description','')} | keywords={e.get('keywords', [])}"
+            for e in (existing_categories or [])
+        )
+        or "<none>"
+    )
     parts = [
         "Задача: классифицировать документ по первой странице/названию/оглавлению в одну из уже предложенных категорий или создать новую категорию, если подходящей нет.",
         "Если подходящая категория найдена — верни decision=matched_existing, category.label=имя найденной категории и укажи basis (first_page|filename|toc|multi|unknown).",

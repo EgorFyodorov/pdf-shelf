@@ -7,8 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any, List
 
-from project.api.pdf_analysis import analyze_pdf_path, PDFAnalysisError
-
+from project.api.pdf_analysis import PDFAnalysisError, analyze_pdf_path
 
 logger = logging.getLogger(__name__)
 
@@ -21,12 +20,16 @@ def _iter_pdfs(input_dir: Path) -> List[Path]:
     return files
 
 
-async def _process_one(path: Path, out_dir: Path, timeout: float) -> dict[str, Any] | dict:
+async def _process_one(
+    path: Path, out_dir: Path, timeout: float
+) -> dict[str, Any] | dict:
     try:
         result = await analyze_pdf_path(str(path), timeout=timeout)
         # Save JSON
         out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / f"{path.stem}.json").write_text(json.dumps(result, ensure_ascii=False, indent=2))
+        (out_dir / f"{path.stem}.json").write_text(
+            json.dumps(result, ensure_ascii=False, indent=2)
+        )
         return {"ok": True, "file": str(path), "result": result}
     except PDFAnalysisError as e:
         logger.error("Analysis failed for %s: %s", path, e)
@@ -60,9 +63,12 @@ async def main_async(args: argparse.Namespace) -> int:
         print(f"Нет PDF файлов в {input_dir}")
         return 1
 
-    print(f"Найдено {len(files)} PDF. Запуск анализа (timeout={args.timeout}s, concurrency={args.concurrency})…")
+    print(
+        f"Найдено {len(files)} PDF. Запуск анализа (timeout={args.timeout}s, concurrency={args.concurrency})…"
+    )
 
     sem = asyncio.Semaphore(args.concurrency)
+
     async def wrapped(p: Path):
         async with sem:
             return await _process_one(p, out_dir, args.timeout)
@@ -76,21 +82,43 @@ async def main_async(args: argparse.Namespace) -> int:
 
     # Totals
     ok_count = sum(1 for e in results if e.get("ok"))
-    print(f"\nИтого: OK={ok_count}, FAIL={len(results) - ok_count}. JSON сохранён в {out_dir}.")
+    print(
+        f"\nИтого: OK={ok_count}, FAIL={len(results) - ok_count}. JSON сохранён в {out_dir}."
+    )
     return 0 if ok_count == len(results) else 2
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Прогон анализа PDF из папки pdf_for_eval")
-    parser.add_argument("--input-dir", default="pdf_for_eval", help="Директория с PDF (по умолчанию pdf_for_eval)")
-    parser.add_argument("--out-dir", default="eval_results", help="Куда сохранять JSON результаты")
-    parser.add_argument("--concurrency", type=int, default=3, help="Количество одновременных задач (по умолчанию 3)")
-    parser.add_argument("--timeout", type=float, default=300.0, help="Таймаут анализа на один файл (сек, по умолчанию 300)")
+    parser = argparse.ArgumentParser(
+        description="Прогон анализа PDF из папки pdf_for_eval"
+    )
+    parser.add_argument(
+        "--input-dir",
+        default="pdf_for_eval",
+        help="Директория с PDF (по умолчанию pdf_for_eval)",
+    )
+    parser.add_argument(
+        "--out-dir", default="eval_results", help="Куда сохранять JSON результаты"
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=3,
+        help="Количество одновременных задач (по умолчанию 3)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=300.0,
+        help="Таймаут анализа на один файл (сек, по умолчанию 300)",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
+    )
     args = parse_args(argv)
     return asyncio.run(main_async(args))
 

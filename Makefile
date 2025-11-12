@@ -29,7 +29,7 @@ shell-db:
 	docker exec -it pdf_shelf_postgres /bin/bash
 
 psql:
-	docker exec -it pdf_shelf_postgres psql -U bot_user -d postgres
+	docker exec -it pdf_shelf_postgres psql -U bot_user -d bot_db
 
 dev-restart:
 	$(COMPOSE) restart pdf-shelf-bot

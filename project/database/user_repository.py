@@ -1,7 +1,7 @@
 import logging
 from typing import List, Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.orm import selectinload
@@ -19,7 +19,7 @@ class UserRepository:
         async with self.sessionmaker() as session:
             stmt = (
                 insert(User)
-                .values(user_id=user_id, user_name=user_name, files_count=0)
+                .values(user_id=user_id, user_name=user_name)
                 .on_conflict_do_update(
                     index_elements=[User.user_id],
                     set_={"user_name": user_name},
@@ -44,15 +44,6 @@ class UserRepository:
                 .where(User.user_id == user_id)
             )
             return result.scalar_one_or_none()
-
-    async def increment_files_count(self, user_id: int) -> None:
-        async with self.sessionmaker() as session:
-            await session.execute(
-                update(User)
-                .where(User.user_id == user_id)
-                .values(files_count=User.files_count + 1)
-            )
-            await session.commit()
 
     async def get_all_users(self) -> List[User]:
         async with self.sessionmaker() as session:

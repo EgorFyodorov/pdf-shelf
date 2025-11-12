@@ -6,11 +6,10 @@ from typing import Any, Optional, Tuple
 
 from project.mcp_pdf.tools import (
     analyze_text_tool,
-    extract_pdf_tool,
     classify_or_create_category_tool,
     define_category_tool,
+    extract_pdf_tool,
 )
-
 
 # --- Exceptions -------------------------------------------------------------
 
@@ -34,7 +33,12 @@ class LLMError(PDFAnalysisError):
 # --- Public API -------------------------------------------------------------
 
 
-async def extract_pdf(*, path: Optional[str] = None, url: Optional[str] = None, timeout: float | None = 60.0) -> Tuple[str, dict[str, Any]]:
+async def extract_pdf(
+    *,
+    path: Optional[str] = None,
+    url: Optional[str] = None,
+    timeout: float | None = 60.0,
+) -> Tuple[str, dict[str, Any]]:
     """Extrac@t first-page TEXT and META from a PDF.
 
     Returns (TEXT, META).
@@ -53,7 +57,9 @@ async def extract_pdf(*, path: Optional[str] = None, url: Optional[str] = None, 
 
     try:
         coro = extract_pdf_tool(path=path, url=url)
-        result = await asyncio.wait_for(coro, timeout=timeout) if timeout else await coro
+        result = (
+            await asyncio.wait_for(coro, timeout=timeout) if timeout else await coro
+        )
         return result["TEXT"], result["META"]
     except asyncio.TimeoutError as e:
         raise DownloadError("Operation timed out during PDF extraction") from e
@@ -68,7 +74,9 @@ async def extract_pdf(*, path: Optional[str] = None, url: Optional[str] = None, 
         raise PDFAnalysisError(str(e)) from e
 
 
-async def analyze_text(text: str, meta: Optional[dict[str, Any]] = None, timeout: float | None = 60.0) -> dict[str, Any]:
+async def analyze_text(
+    text: str, meta: Optional[dict[str, Any]] = None, timeout: float | None = 60.0
+) -> dict[str, Any]:
     """Analyze provided TEXT (typically first page) with META and return JSON by schema.
 
     This API relies on the underlying tool's fallback: if LLM is unavailable, a
@@ -85,9 +93,11 @@ async def analyze_text(text: str, meta: Optional[dict[str, Any]] = None, timeout
         raise LLMError(str(e)) from e
 
 
-async def analyze_pdf_path(path: str, *, timeout: float | None = 60.0) -> dict[str, Any]:
+async def analyze_pdf_path(
+    path: str, *, timeout: float | None = 60.0
+) -> dict[str, Any]:
     """Convenience: extract from local file then analyze.
-    
+
     timeout: общий таймаут для всей операции (extract + analyze).
     Таймаут распределяется: 30% на extract, 70% на analyze (LLM обычно медленнее).
     """
@@ -99,21 +109,21 @@ async def analyze_pdf_path(path: str, *, timeout: float | None = 60.0) -> dict[s
     else:
         extract_timeout = None
         analyze_timeout = None
-    
+
     text, meta = await extract_pdf(path=path, timeout=extract_timeout)
     return await analyze_text(text, meta, timeout=analyze_timeout)
 
 
 async def analyze_pdf_url(url: str, *, timeout: float | None = 60.0) -> dict[str, Any]:
     """Convenience: download/extract from URL then analyze.
-    
+
     timeout: общий таймаут для всей операции (download/extract + analyze).
     Таймаут распределяется: 30% на extract, 70% на analyze (LLM обычно медленнее).
     """
 
     if not (url.startswith("http://") or url.startswith("https://")):
         raise PDFAnalysisError("URL must start with http:// or https://")
-    
+
     if timeout:
         # Распределяем таймаут: 30% на extract, 70% на analyze
         extract_timeout = timeout * 0.3
@@ -121,7 +131,7 @@ async def analyze_pdf_url(url: str, *, timeout: float | None = 60.0) -> dict[str
     else:
         extract_timeout = None
         analyze_timeout = None
-    
+
     text, meta = await extract_pdf(url=url, timeout=extract_timeout)
     return await analyze_text(text, meta, timeout=analyze_timeout)
 
@@ -142,7 +152,9 @@ async def classify_or_create_category(
     Возвращает JSON по CATEGORY_DECISION_SCHEMA.
     """
     try:
-        coro = classify_or_create_category_tool(text=text, meta=meta, existing_categories=existing_categories)
+        coro = classify_or_create_category_tool(
+            text=text, meta=meta, existing_categories=existing_categories
+        )
         return await asyncio.wait_for(coro, timeout=timeout) if timeout else await coro
     except asyncio.TimeoutError as e:
         raise LLMError("Operation timed out during category decision") from e

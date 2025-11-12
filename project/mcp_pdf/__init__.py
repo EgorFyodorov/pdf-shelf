@@ -5,4 +5,4 @@
 - server: запуск MCP сервера через stdio
 """
 
-from .tools import extract_pdf_tool, analyze_text_tool  # noqa: F401
+from .tools import analyze_text_tool, extract_pdf_tool  # noqa: F401

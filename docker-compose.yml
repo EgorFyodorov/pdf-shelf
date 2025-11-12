@@ -23,6 +23,12 @@ services:
   pdf-shelf-bot:
     build: .
     container_name: pdf_shelf_bot
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 1G
     depends_on:
       pdf-shelf-postgres:
         condition: service_healthy
@@ -34,6 +40,8 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_HOST: ${POSTGRES_HOST}
       POSTGRES_PORT: ${POSTGRES_PORT}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      USE_MOCK_ANALYSIS: ${USE_MOCK_ANALYSIS:-false}
     volumes:
       - ./project:/app/project
       - ./bot.py:/app/bot.py

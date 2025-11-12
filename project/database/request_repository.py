@@ -51,6 +51,20 @@ class RequestRepository:
             )
             return list(result.scalars().all())
 
+    async def create_batch_requests(
+        self, user_id: int, file_ids: List[uuid.UUID]
+    ) -> List[Request]:
+        async with self.sessionmaker() as session:
+            requests = [
+                Request(user_id=user_id, file_id=file_id) for file_id in file_ids
+            ]
+            session.add_all(requests)
+            await session.commit()
+            for req in requests:
+                await session.refresh(req)
+            logger.info(f"Created {len(requests)} requests for user {user_id}")
+            return requests
+
     async def delete_request(self, request_id: uuid.UUID) -> bool:
         async with self.sessionmaker() as session:
             result = await session.execute(

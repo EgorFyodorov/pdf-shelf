@@ -1,6 +1,6 @@
 import logging
-from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +15,9 @@ class PDFRepository:
     def __init__(self, sessionmaker: async_sessionmaker):  # noqa: ARG002
         self.sessionmaker = sessionmaker
 
-    async def log_pdf_upload(self, user_id: int, filename: str, file_id: str, file_size: int) -> None:
+    async def log_pdf_upload(
+        self, user_id: int, filename: str, file_id: str, file_size: int
+    ) -> None:
         logger.info(
             "PDF upload: user_id=%s filename=%s file_id=%s size=%s",
             user_id,

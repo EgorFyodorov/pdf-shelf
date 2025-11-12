@@ -3,13 +3,13 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from typing import Optional, Iterable
-from urllib.parse import urlparse, unquote
+from typing import Iterable, Optional
+from urllib.parse import unquote, urlparse
 
 import aiohttp
-from langdetect import detect as lang_detect, DetectorFactory
+from langdetect import DetectorFactory
+from langdetect import detect as lang_detect
 from pypdf import PdfReader
-
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,9 @@ class Extracted:
 
 
 async def _download_bytes(url: str, timeout: int = 20) -> bytes:
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
+    async with aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(total=timeout)
+    ) as session:
         async with session.get(url, allow_redirects=True) as resp:
             if resp.status != 200:
                 raise ValueError(f"HTTP {resp.status} for URL: {url}")
@@ -77,19 +79,27 @@ def _read_pdf_bytes(data: bytes, source_name: Optional[str]) -> Extracted:
     c1_no_spaces = len(_normalize_spaces(first_page_text).replace(" ", ""))
     lang = detect_language_safe(first_page_text)
 
-    total_words = estimate_total_words(w1=w1, page_count=total_pages, byte_size=len(data))
+    total_words = estimate_total_words(
+        w1=w1, page_count=total_pages, byte_size=len(data)
+    )
 
     # Попытка детерминистического подсчёта объёма/времени по всему документу (PyMuPDF)
     reading_breakdown: Optional[dict] = None
     reading_total_min: Optional[float] = None
     try:
-        from .metrics import estimate_pdf_reading_time_minutes  # lazy import to avoid heavy deps at import time
+        from .metrics import (
+            estimate_pdf_reading_time_minutes,
+        )  # lazy import to avoid heavy deps at import time
 
-        mres = estimate_pdf_reading_time_minutes(data=data, lang=lang or "ru", complexity_level=None)
+        mres = estimate_pdf_reading_time_minutes(
+            data=data, lang=lang or "ru", complexity_level=None
+        )
         reading_breakdown = mres.get("breakdown")
         reading_total_min = float(mres.get("total_min", 0.0))
         # words из точного подсчёта
-        if isinstance(reading_breakdown, dict) and isinstance(reading_breakdown.get("words"), int):
+        if isinstance(reading_breakdown, dict) and isinstance(
+            reading_breakdown.get("words"), int
+        ):
             total_words = int(reading_breakdown["words"]) or total_words
     except Exception as e:
         logger.debug("Reading-time metrics error, fallback to heuristic words: %s", e)
@@ -115,7 +125,9 @@ def _read_pdf_bytes(data: bytes, source_name: Optional[str]) -> Extracted:
     )
 
 
-async def extract_from_path_or_url(path: Optional[str] = None, url: Optional[str] = None) -> Extracted:
+async def extract_from_path_or_url(
+    path: Optional[str] = None, url: Optional[str] = None
+) -> Extracted:
     if not path and not url:
         raise ValueError("Either 'path' or 'url' must be provided")
     if path:
@@ -189,7 +201,9 @@ def _clamp(val: float, low: float, high: float) -> float:
     return max(low, min(high, val))
 
 
-def estimate_total_words(w1: int, page_count: Optional[int], byte_size: Optional[int]) -> int:
+def estimate_total_words(
+    w1: int, page_count: Optional[int], byte_size: Optional[int]
+) -> int:
     """Оценка общего числа слов по правилам из ТЗ.
 
     - Если w1 >= 30 и известен page_count:
@@ -224,6 +238,7 @@ def avg_chars_per_word_from_first_page(first_page_text: str, w1: int) -> float:
 
 
 # ----------------------- TOC extraction helpers -----------------------------
+
 
 def _should_include_toc() -> bool:
     return str(os.getenv("PDF_MCP_INCLUDE_TOC", "true")).strip().lower() != "false"

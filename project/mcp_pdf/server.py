@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import asyncio
 import logging
-
 from typing import Any
 
 try:
@@ -11,8 +9,12 @@ try:
 except Exception:  # pragma: no cover
     FastMCP = None  # type: ignore
 
-from .tools import analyze_text_tool, extract_pdf_tool
-from .tools import classify_or_create_category_tool, define_category_tool
+from .tools import (
+    analyze_text_tool,
+    classify_or_create_category_tool,
+    define_category_tool,
+    extract_pdf_tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +27,9 @@ def _build_server():
     app = FastMCP("pdf-mcp")
 
     @app.tool()
-    async def extract_pdf(path: str | None = None, url: str | None = None) -> dict[str, Any]:
+    async def extract_pdf(
+        path: str | None = None, url: str | None = None
+    ) -> dict[str, Any]:
         """Извлекает TEXT и META из PDF. Требуется один из аргументов: path или url."""
         return await extract_pdf_tool(path=path, url=url)
 
@@ -45,7 +49,9 @@ def _build_server():
         existing_categories: список объектов {label, description?, keywords?}
         Возвращает JSON по CATEGORY_DECISION_SCHEMA.
         """
-        return await classify_or_create_category_tool(text=TEXT, meta=META, existing_categories=existing_categories)
+        return await classify_or_create_category_tool(
+            text=TEXT, meta=META, existing_categories=existing_categories
+        )
 
     @app.tool()
     async def define_category(TEXT: str, META: dict | None = None) -> dict:

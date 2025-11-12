@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 # Lazy import of config to avoid hard dependency on PyYAML during simple tools/CLI usage
 try:  # noqa: SIM105
@@ -24,16 +24,16 @@ def load_env_file(env_path: Path):
         return
 
     try:
-        with open(env_path, 'r', encoding='utf-8') as f:
+        with open(env_path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 # Skip empty lines and comments
-                if not line or line.startswith('#'):
+                if not line or line.startswith("#"):
                     continue
 
                 # Parse KEY=VALUE format
-                if '=' in line:
-                    key, value = line.split('=', 1)
+                if "=" in line:
+                    key, value = line.split("=", 1)
                     key = key.strip()
                     value = value.strip()
 
@@ -52,6 +52,7 @@ def load_env_file(env_path: Path):
 
 if ENV_PATH.exists():
     load_env_file(ENV_PATH)
+
 
 def init_logger(config: Any | None):
     """Initialize root logger.

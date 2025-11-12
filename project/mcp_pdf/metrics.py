@@ -29,7 +29,9 @@ K_BY_LEVEL: Dict[str, float] = {
 # Regexes
 WORD_RE = re.compile(r"[A-Za-zА-Яа-яЁё0-9\u0400-\u04FF]+", re.U)
 TABLE_RE = re.compile(r"\b(table|таблица|табл\.)\b", re.I | re.U)
-CODE_LINE_RE = re.compile(r"[;{}()\[\]]|^\s*(def|class|#include|for\s*\(|while\s*\()", re.I | re.M)
+CODE_LINE_RE = re.compile(
+    r"[;{}()\[\]]|^\s*(def|class|#include|for\s*\(|while\s*\()", re.I | re.M
+)
 
 
 def _parse_per_image_seconds(env_val: Optional[str]) -> Tuple[int, int]:
@@ -154,6 +156,7 @@ def _fast_fallback(
     page_count = int(getattr(doc, "page_count", len(doc) if doc is not None else 0))  # type: ignore[arg-type]
 
     w1 = _count_words(first_text)
+
     # Эвристика как в ранней версии: clamp w1→words/page, затем умножаем
     def _clamp(v: float, lo: float, hi: float) -> float:
         return max(lo, min(hi, v))
@@ -207,7 +210,9 @@ def estimate_pdf_reading_time_minutes(
     }
     """
     if fitz is None:
-        raise RuntimeError("PyMuPDF (pymupdf) is not installed; cannot estimate reading time")
+        raise RuntimeError(
+            "PyMuPDF (pymupdf) is not installed; cannot estimate reading time"
+        )
     if not path and data is None:
         raise ValueError("Provide either 'path' or 'data'")
 
@@ -217,7 +222,9 @@ def estimate_pdf_reading_time_minutes(
         max_pages = int(max_pages_env)
     except Exception:
         max_pages = 200
-    per_image_seconds = per_image_seconds or _parse_per_image_seconds(os.getenv("PDF_MCP_PER_IMAGE_SECONDS"))
+    per_image_seconds = per_image_seconds or _parse_per_image_seconds(
+        os.getenv("PDF_MCP_PER_IMAGE_SECONDS")
+    )
 
     # Open document
     try:
@@ -232,11 +239,20 @@ def estimate_pdf_reading_time_minutes(
     try:
         # If too large and accurate requested, fallback to fast
         if mode == "accurate" and len(doc) > max_pages:
-            logger.debug("PDF_MCP_READTIME_MODE=accurate but pages=%s>max=%s → using fast fallback", len(doc), max_pages)
+            logger.debug(
+                "PDF_MCP_READTIME_MODE=accurate but pages=%s>max=%s → using fast fallback",
+                len(doc),
+                max_pages,
+            )
             mode = "fast"
 
         if mode == "accurate":
-            res = _accurate_estimate(doc=doc, lang=lang, complexity_level=complexity_level, per_image_seconds=per_image_seconds)
+            res = _accurate_estimate(
+                doc=doc,
+                lang=lang,
+                complexity_level=complexity_level,
+                per_image_seconds=per_image_seconds,
+            )
         else:
             res = _fast_fallback(doc=doc, lang=lang, complexity_level=complexity_level)
     finally:

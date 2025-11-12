@@ -1,11 +1,11 @@
 import logging
 import uuid
-from typing import List, Optional
+from typing import Any, List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import and_, not_, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from project.database.models import File
+from project.database.models import File, Request
 
 logger = logging.getLogger(__name__)
 
@@ -16,19 +16,23 @@ class FileRepository:
 
     async def create_file(
         self,
-        file_id_int: int,
         user_id: int,
-        complexity: int,
-        size: int,
-        labels: Optional[List[str]] = None,
+        telegram_file_id: str,
+        title: str,
+        reading_time_min: float,
+        analysis_json: dict[str, Any],
+        source_url: Optional[str] = None,
+        tags: Optional[List[str]] = None,
     ) -> File:
         async with self.sessionmaker() as session:
             file = File(
-                file_id_int=file_id_int,
                 user_id=user_id,
-                complexity=complexity,
-                size=size,
-                labels=labels or [],
+                telegram_file_id=telegram_file_id,
+                source_url=source_url,
+                title=title,
+                reading_time_min=reading_time_min,
+                tags=tags or [],
+                analysis_json=analysis_json,
             )
             session.add(file)
             await session.commit()
@@ -43,7 +47,44 @@ class FileRepository:
 
     async def get_files_by_user(self, user_id: int) -> List[File]:
         async with self.sessionmaker() as session:
-            result = await session.execute(select(File).where(File.user_id == user_id))
+            result = await session.execute(
+                select(File)
+                .where(File.user_id == user_id)
+                .order_by(File.created_at.desc())
+            )
+            return list(result.scalars().all())
+
+    async def get_files_by_user_filtered(
+        self,
+        user_id: int,
+        tags: Optional[List[str]] = None,
+        exclude_file_ids: Optional[List[uuid.UUID]] = None,
+    ) -> List[File]:
+        async with self.sessionmaker() as session:
+            conditions = [File.user_id == user_id]
+
+            if tags:
+                # Используем оператор && (overlap) для PostgreSQL ARRAY
+                conditions.append(File.tags.bool_op("&&")(tags))
+
+            if exclude_file_ids:
+                conditions.append(not_(File.file_id.in_(exclude_file_ids)))
+
+            result = await session.execute(
+                select(File).where(and_(*conditions)).order_by(File.created_at.desc())
+            )
+            return list(result.scalars().all())
+
+    async def get_recently_sent_files(
+        self, user_id: int, limit: int = 10
+    ) -> List[uuid.UUID]:
+        async with self.sessionmaker() as session:
+            result = await session.execute(
+                select(Request.file_id)
+                .where(Request.user_id == user_id)
+                .order_by(Request.id.desc())
+                .limit(limit)
+            )
             return list(result.scalars().all())
 
     async def delete_file(self, file_id: uuid.UUID) -> bool:
