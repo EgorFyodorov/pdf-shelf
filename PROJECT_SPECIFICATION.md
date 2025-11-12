@@ -121,10 +121,14 @@ PDF Shelf — ...
 - `source_url` (TEXT) — Исходный URL (если материал был загружен по ссылке)
 - `title` (TEXT) — Название документа
 - `reading_time_min` (NUMERIC) — Время чтения в минутах (критично для алгоритма подбора и индексации)
+- `tags` (TEXT[]) — Массив тегов для быстрой фильтрации (извлекается из `analysis_json.topics[].label`)
 - `analysis_json` (JSONB) — Полный JSON анализа (все данные из MCP анализа хранятся здесь)
 - `created_at` (TIMESTAMP) — Дата создания записи
 
-**Примечание:** Все данные анализа (complexity, topics, category, volume и т.д.) хранятся в `analysis_json`. Отдельное поле `reading_time_min` оставлено только для производительности алгоритма подбора материалов и создания индексов.
+**Примечание:** 
+- Все данные анализа (complexity, topics, category, volume и т.д.) хранятся в `analysis_json`
+- Отдельные поля `reading_time_min` и `tags` оставлены для производительности: быстрая фильтрация по тегам и сортировка по времени чтения
+- `tags` содержит только метки (labels) из `topics`, полная информация о темах (score, keywords, rationale) остаётся в `analysis_json`
 
 **`requests`** — история выданных материалов
 - `id` (UUID, PRIMARY KEY) — UUID запроса
@@ -136,11 +140,14 @@ PDF Shelf — ...
 - `idx_files_user_id` — поиск файлов пользователя
 - `idx_files_reading_time` — сортировка по времени чтения
 - `idx_files_user_reading_time` — комбинированный индекс для подбора материалов
-- `idx_files_analysis_json` (GIN) — поиск по полям внутри JSON (topics, category, complexity)
+- `idx_files_tags` (GIN) — поиск по тегам (массив TEXT[])
+- `idx_files_analysis_json` (GIN) — поиск по полям внутри JSON (category, complexity)
 - `idx_requests_user_id` — история запросов пользователя
 - `idx_requests_file_id` — статистика по файлам
 
-**Примечание:** Для фильтрации по тегам и категориям используются JSONB-запросы с GIN-индексом на `analysis_json`.
+**Примечание:** 
+- Для фильтрации по тегам используется индекс на массиве `tags` (быстрее и проще, чем JSONB-запросы)
+- Для других полей анализа (category, complexity) используются JSONB-запросы с GIN-индексом на `analysis_json`
 
 ---
 
@@ -166,9 +173,10 @@ PDF Shelf — ...
 ```
 Полный JSON анализа → files.analysis_json (JSONB)
 analysis.volume.reading_time_min → files.reading_time_min (отдельное поле для индексации)
+analysis.topics[].label → files.tags (TEXT[] для быстрой фильтрации)
 ```
 
-**Все остальные данные** (volume, complexity, topics, category и т.д.) хранятся только в `analysis_json` и извлекаются через JSONB-запросы:
+**Все остальные данные** (volume, complexity, полная информация о topics, category и т.д.) хранятся в `analysis_json` и извлекаются через JSONB-запросы:
 
 ```sql
 -- Примеры запросов к JSONB:
@@ -192,9 +200,9 @@ analysis_json->'category'->>'label'    -- категория
 - `topics` — первые 2-3 темы из `analysis_json->'topics'`
 
 **Фильтрация при выгрузке:**
-- По тегам: JSONB-запрос к `analysis_json->'topics'` с использованием GIN-индекса
+- По тегам: запрос к массиву `tags` с использованием GIN-индекса
   ```sql
-  WHERE analysis_json->'topics' @> '[{"label": "ML"}]'::jsonb
+  WHERE tags && ARRAY['ML']::TEXT[]  -- файлы, содержащие тег "ML"
   ```
 - По времени: использование `files.reading_time_min` для алгоритма подбора (прямое поле для производительности)
 - Исключение уже выданных: проверка через таблицу `requests`
@@ -415,6 +423,7 @@ files = await file_repo.get_files_by_user_filtered(
 - `file_id` (UUID)
 - `telegram_file_id` (TEXT) — для отправки PDF
 - `reading_time_min` (NUMERIC) — для алгоритма подбора
+- `tags` (TEXT[]) — для фильтрации по тегам
 - `title` (TEXT) — для карточки
 - `source_url` (TEXT) — для карточки
 - `analysis_json` (JSONB) — все данные анализа (complexity, topics, category, volume)
