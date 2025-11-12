@@ -84,8 +84,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Прогон анализа PDF из папки pdf_for_eval")
     parser.add_argument("--input-dir", default="pdf_for_eval", help="Директория с PDF (по умолчанию pdf_for_eval)")
     parser.add_argument("--out-dir", default="eval_results", help="Куда сохранять JSON результаты")
-    parser.add_argument("--concurrency", type=int, default=3, help="Количество одновременных задач")
-    parser.add_argument("--timeout", type=float, default=120.0, help="Таймаут анализа (сек)")
+    parser.add_argument("--concurrency", type=int, default=3, help="Количество одновременных задач (по умолчанию 3)")
+    parser.add_argument("--timeout", type=float, default=300.0, help="Таймаут анализа на один файл (сек, по умолчанию 300)")
     return parser.parse_args(argv)
 
 

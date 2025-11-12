@@ -86,19 +86,44 @@ async def analyze_text(text: str, meta: Optional[dict[str, Any]] = None, timeout
 
 
 async def analyze_pdf_path(path: str, *, timeout: float | None = 60.0) -> dict[str, Any]:
-    """Convenience: extract from local file then analyze."""
+    """Convenience: extract from local file then analyze.
+    
+    timeout: общий таймаут для всей операции (extract + analyze).
+    Таймаут распределяется: 30% на extract, 70% на analyze (LLM обычно медленнее).
+    """
 
-    text, meta = await extract_pdf(path=path, timeout=timeout)
-    return await analyze_text(text, meta, timeout=timeout)
+    if timeout:
+        # Распределяем таймаут: 30% на extract, 70% на analyze
+        extract_timeout = timeout * 0.3
+        analyze_timeout = timeout * 0.7
+    else:
+        extract_timeout = None
+        analyze_timeout = None
+    
+    text, meta = await extract_pdf(path=path, timeout=extract_timeout)
+    return await analyze_text(text, meta, timeout=analyze_timeout)
 
 
 async def analyze_pdf_url(url: str, *, timeout: float | None = 60.0) -> dict[str, Any]:
-    """Convenience: download/extract from URL then analyze."""
+    """Convenience: download/extract from URL then analyze.
+    
+    timeout: общий таймаут для всей операции (download/extract + analyze).
+    Таймаут распределяется: 30% на extract, 70% на analyze (LLM обычно медленнее).
+    """
 
     if not (url.startswith("http://") or url.startswith("https://")):
         raise PDFAnalysisError("URL must start with http:// or https://")
-    text, meta = await extract_pdf(url=url, timeout=timeout)
-    return await analyze_text(text, meta, timeout=timeout)
+    
+    if timeout:
+        # Распределяем таймаут: 30% на extract, 70% на analyze
+        extract_timeout = timeout * 0.3
+        analyze_timeout = timeout * 0.7
+    else:
+        extract_timeout = None
+        analyze_timeout = None
+    
+    text, meta = await extract_pdf(url=url, timeout=extract_timeout)
+    return await analyze_text(text, meta, timeout=analyze_timeout)
 
 
 # ----------------- Dynamic categories (wrappers over MCP tools) -------------

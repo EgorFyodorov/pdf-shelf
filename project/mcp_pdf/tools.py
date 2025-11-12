@@ -255,7 +255,7 @@ except Exception:  # pragma: no cover - optional at runtime
     genai = None  # type: ignore
 
 
-async def _call_gemini(text: str, meta: dict[str, Any]) -> dict[str, Any]:
+async def _call_gemini(text: str, meta: dict[str, Any], max_retries: int = 5) -> dict[str, Any]:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key or genai is None:
         raise RuntimeError("Gemini is not configured or google-genai is missing")
@@ -272,6 +272,9 @@ async def _call_gemini(text: str, meta: dict[str, Any]) -> dict[str, Any]:
         # Use new Google Gen AI SDK
         client = genai.Client(api_key=api_key)
         
+        # Отключаем AFC (Automatic Function Calling), так как мы не используем функции
+        afc_config = {"automatic_function_calling": {"disable": True}}
+        
         # Get model and generate content
         try:
             # Approach 1: Use get_model() method (recommended for new SDK)
@@ -281,17 +284,26 @@ async def _call_gemini(text: str, meta: dict[str, Any]) -> dict[str, Any]:
                 resp = model.generate_content(
                     user_prompt,
                     system_instruction=sys_prompt,
+                    config=afc_config,
                 )
             except TypeError:
                 # Fallback: system_instruction might not be supported, prepend to prompt
-                resp = model.generate_content(f"{sys_prompt}\n\n{user_prompt}")
+                try:
+                    resp = model.generate_content(
+                        f"{sys_prompt}\n\n{user_prompt}",
+                        config=afc_config,
+                    )
+                except TypeError:
+                    # Если config не поддерживается, пробуем без него
+                    resp = model.generate_content(f"{sys_prompt}\n\n{user_prompt}")
         except AttributeError:
             # Approach 2: Try using models.generate_content directly
             try:
+                config = {"system_instruction": sys_prompt, **afc_config}
                 resp = client.models.generate_content(
                     model=model_name,
                     contents=user_prompt,
-                    config={"system_instruction": sys_prompt},
+                    config=config,
                 )
             except (AttributeError, TypeError):
                 # Approach 3: Fallback to GenerativeModel (if still available)
@@ -300,7 +312,11 @@ async def _call_gemini(text: str, meta: dict[str, Any]) -> dict[str, Any]:
                     model_name=model_name,
                     system_instruction=sys_prompt,
                 )
-                resp = model.generate_content(user_prompt)
+                try:
+                    resp = model.generate_content(user_prompt, generation_config=afc_config)
+                except TypeError:
+                    # Если generation_config не поддерживается, пробуем без него
+                    resp = model.generate_content(user_prompt)
         
         # Extract text from response
         try:
@@ -337,7 +353,48 @@ async def _call_gemini(text: str, meta: dict[str, Any]) -> dict[str, Any]:
         
         return content or "{}"
 
-    content = await asyncio.to_thread(_generate_sync)
+    # Retry логика для временных ошибок API (503, 429, overloaded)
+    content = None
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            content = await asyncio.to_thread(_generate_sync)
+            # Если получили контент, выходим из цикла retry
+            break
+        except Exception as e:
+            last_error = e
+            error_str = str(e).lower()
+            error_msg = str(e)
+            
+            # Проверяем, это временная ошибка API?
+            is_temporary_error = (
+                "503" in error_msg or 
+                "429" in error_msg or 
+                "overloaded" in error_str or 
+                "unavailable" in error_str or
+                "rate limit" in error_str or
+                "quota" in error_str
+            )
+            
+            if is_temporary_error and attempt < max_retries - 1:
+                # Экспоненциальная задержка: 2, 4, 8 секунд
+                wait_time = 2 ** (attempt + 1)
+                logger.info(
+                    f"API временно недоступен (попытка {attempt + 1}/{max_retries}), "
+                    f"повтор через {wait_time}с... Ошибка: {error_msg[:100]}"
+                )
+                await asyncio.sleep(wait_time)
+                continue
+            else:
+                # Если не временная ошибка или кончились попытки - выбрасываем
+                raise
+    
+    # Если после всех попыток content не получен, выбрасываем последнюю ошибку
+    if content is None:
+        if last_error:
+            raise last_error
+        raise RuntimeError("Failed to get content from Gemini API")
+    
     try:
         data = json.loads(content)
     except json.JSONDecodeError as e:
@@ -379,7 +436,7 @@ async def _call_gemini(text: str, meta: dict[str, Any]) -> dict[str, Any]:
             raise validation_error
 
 
-async def _call_gemini_category(text: str, meta: dict[str, Any], existing_categories: list[dict] | None) -> dict[str, Any]:
+async def _call_gemini_category(text: str, meta: dict[str, Any], existing_categories: list[dict] | None, max_retries: int = 5) -> dict[str, Any]:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key or genai is None:
         raise RuntimeError("Gemini is not configured or google-genai is missing")
@@ -394,6 +451,9 @@ async def _call_gemini_category(text: str, meta: dict[str, Any], existing_catego
         # Use new Google Gen AI SDK
         client = genai.Client(api_key=api_key)
         
+        # Отключаем AFC (Automatic Function Calling), так как мы не используем функции
+        afc_config = {"automatic_function_calling": {"disable": True}}
+        
         # Get model and generate content
         try:
             # Approach 1: Use get_model() method (recommended for new SDK)
@@ -403,17 +463,26 @@ async def _call_gemini_category(text: str, meta: dict[str, Any], existing_catego
                 resp = model.generate_content(
                     user_prompt,
                     system_instruction=sys_prompt,
+                    config=afc_config,
                 )
             except TypeError:
                 # Fallback: system_instruction might not be supported, prepend to prompt
-                resp = model.generate_content(f"{sys_prompt}\n\n{user_prompt}")
+                try:
+                    resp = model.generate_content(
+                        f"{sys_prompt}\n\n{user_prompt}",
+                        config=afc_config,
+                    )
+                except TypeError:
+                    # Если config не поддерживается, пробуем без него
+                    resp = model.generate_content(f"{sys_prompt}\n\n{user_prompt}")
         except AttributeError:
             # Approach 2: Try using models.generate_content directly
             try:
+                config = {"system_instruction": sys_prompt, **afc_config}
                 resp = client.models.generate_content(
                     model=model_name,
                     contents=user_prompt,
-                    config={"system_instruction": sys_prompt},
+                    config=config,
                 )
             except (AttributeError, TypeError):
                 # Approach 3: Fallback to GenerativeModel (if still available)
@@ -422,7 +491,11 @@ async def _call_gemini_category(text: str, meta: dict[str, Any], existing_catego
                     model_name=model_name,
                     system_instruction=sys_prompt,
                 )
-                resp = model.generate_content(user_prompt)
+                try:
+                    resp = model.generate_content(user_prompt, generation_config=afc_config)
+                except TypeError:
+                    # Если generation_config не поддерживается, пробуем без него
+                    resp = model.generate_content(user_prompt)
         
         # Extract text from response
         try:
@@ -459,7 +532,47 @@ async def _call_gemini_category(text: str, meta: dict[str, Any], existing_catego
         
         return content or "{}"
 
-    content = await asyncio.to_thread(_generate_sync)
+    # Retry логика для временных ошибок API (503, 429, overloaded)
+    content = None
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            content = await asyncio.to_thread(_generate_sync)
+            # Если получили контент, выходим из цикла retry
+            break
+        except Exception as e:
+            last_error = e
+            error_str = str(e).lower()
+            error_msg = str(e)
+            
+            # Проверяем, это временная ошибка API?
+            is_temporary_error = (
+                "503" in error_msg or 
+                "429" in error_msg or 
+                "overloaded" in error_str or 
+                "unavailable" in error_str or
+                "rate limit" in error_str or
+                "quota" in error_str
+            )
+            
+            if is_temporary_error and attempt < max_retries - 1:
+                # Экспоненциальная задержка: 2, 4, 8 секунд
+                wait_time = 2 ** (attempt + 1)
+                logger.info(
+                    f"API временно недоступен для категоризации (попытка {attempt + 1}/{max_retries}), "
+                    f"повтор через {wait_time}с... Ошибка: {error_msg[:100]}"
+                )
+                await asyncio.sleep(wait_time)
+                continue
+            else:
+                # Если не временная ошибка или кончились попытки - выбрасываем
+                raise
+    
+    # Если после всех попыток content не получен, выбрасываем последнюю ошибку
+    if content is None:
+        if last_error:
+            raise last_error
+        raise RuntimeError("Failed to get content from Gemini API")
     
     # Проверяем, что контент не пустой
     if not content or content.strip() == "" or content.strip() == "{}":
