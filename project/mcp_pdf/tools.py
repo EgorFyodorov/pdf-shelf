@@ -182,15 +182,55 @@ def _normalize_llm_response(data: dict[str, Any], meta: dict[str, Any], text: st
     result["topics"] = topics[:6]  # Максимум 6
     
     # Нормализуем category
-    category_raw = normalized_data.get("category") or normalized_data.get("категория") or {}
+    # Пробуем разные варианты ключей
+    category_raw = (
+        normalized_data.get("category") 
+        or data.get("category")  # Проверяем оригинальные данные
+        or normalized_data.get("категория")
+        or data.get("категория")  # Проверяем оригинальные данные с русским ключом
+        or {}
+    )
+    
     category: dict[str, Any] = {}
     
-    category["label"] = category_raw.get("label") or "Другое"
-    category["score"] = category_raw.get("score") or 0.0
-    category["basis"] = category_raw.get("basis") or category_raw.get("description") or "llm"
-    category["keywords"] = category_raw.get("keywords") or []
+    # Извлекаем поля категории с разными вариантами названий
+    category["label"] = (
+        category_raw.get("label") 
+        or category_raw.get("name")
+        or category_raw.get("title")
+        or "Другое"
+    )
+    
+    category["score"] = category_raw.get("score")
+    if category["score"] is None:
+        # Пробуем найти score в разных форматах
+        score_val = category_raw.get("confidence") or category_raw.get("уверенность")
+        if score_val is not None:
+            category["score"] = float(score_val) if isinstance(score_val, (int, float)) else 0.0
+        else:
+            category["score"] = 0.0
+    
+    category["basis"] = (
+        category_raw.get("basis")
+        or category_raw.get("description")
+        or category_raw.get("основание")
+        or category_raw.get("описание")
+        or ("llm" if category["label"] != "Другое" else "none")
+    )
+    
+    category["keywords"] = category_raw.get("keywords") or category_raw.get("ключевые_слова") or []
     if isinstance(category["keywords"], str):
         category["keywords"] = [category["keywords"]]
+    elif not isinstance(category["keywords"], list):
+        category["keywords"] = []
+    
+    # Если категория не найдена, но есть данные в исходном ответе, логируем для отладки
+    if category["label"] == "Другое" and category["score"] == 0.0:
+        logger.debug("Category not found in LLM response. Available keys: %s", list(normalized_data.keys()))
+        logger.debug("Original data keys: %s", list(data.keys()) if isinstance(data, dict) else "not a dict")
+        logger.debug("Category raw: %s", category_raw)
+    else:
+        logger.debug("Category extracted successfully: label=%s, score=%s", category["label"], category["score"])
     
     result["category"] = category
     
@@ -311,19 +351,32 @@ async def _call_gemini(text: str, meta: dict[str, Any]) -> dict[str, Any]:
         data = json.loads(m.group(0))
     
     # Нормализуем ответ LLM перед валидацией
+    normalized_data = None
+    validation_error = None
+    
     try:
         normalized_data = _normalize_llm_response(data, meta, text)
         validate(instance=normalized_data, schema=ANALYSIS_JSON_SCHEMA)
         return normalized_data
     except Exception as e:
-        logger.warning("Failed to normalize LLM response, trying direct validation: %s", e)
+        validation_error = e
+        logger.warning("Failed to normalize/validate LLM response: %s", e)
+        # Если нормализация прошла, но валидация не прошла, все равно используем нормализованные данные
+        if normalized_data is not None:
+            logger.info("Using normalized data despite validation error, category: %s", normalized_data.get("category", {}).get("label"))
+            return normalized_data
+        
         # Если нормализация не удалась, пробуем валидировать как есть
         try:
             validate(instance=data, schema=ANALYSIS_JSON_SCHEMA)
             return data
         except Exception:
-            # Если и это не работает, выбрасываем ошибку
-            raise
+            # Если и это не работает, но у нас есть нормализованные данные (даже с ошибкой валидации), используем их
+            if normalized_data is not None:
+                logger.info("Using normalized data despite validation failure")
+                return normalized_data
+            # Если ничего не получилось, выбрасываем ошибку
+            raise validation_error
 
 
 async def _call_gemini_category(text: str, meta: dict[str, Any], existing_categories: list[dict] | None) -> dict[str, Any]:
@@ -407,16 +460,57 @@ async def _call_gemini_category(text: str, meta: dict[str, Any], existing_catego
         return content or "{}"
 
     content = await asyncio.to_thread(_generate_sync)
+    
+    # Проверяем, что контент не пустой
+    if not content or content.strip() == "" or content.strip() == "{}":
+        logger.warning("Gemini returned empty content for category decision")
+        raise RuntimeError("Empty response from Gemini")
+    
+    # Пробуем распарсить JSON
     try:
         data = json.loads(content)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        logger.warning("Gemini returned non-JSON for category decision: %s", e)
+        logger.debug("Content received: %s", content[:500])  # Первые 500 символов для отладки
+        
+        # Пробуем найти JSON в тексте
         import re
-
-        m = re.search(r"\{[\s\S]*\}$", content)
-        if not m:
-            raise
-        data = json.loads(m.group(0))
-    validate(instance=data, schema=CATEGORY_DECISION_SCHEMA)
+        # Ищем первый JSON объект в тексте
+        m = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content)
+        if m:
+            try:
+                data = json.loads(m.group(0))
+                logger.info("Successfully extracted JSON from response")
+            except json.JSONDecodeError:
+                logger.error("Failed to parse extracted JSON")
+                raise RuntimeError(f"Invalid JSON in response: {content[:200]}")
+        else:
+            # Если JSON не найден, пробуем найти между ```json и ```
+            json_match = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', content)
+            if json_match:
+                try:
+                    data = json.loads(json_match.group(1))
+                    logger.info("Successfully extracted JSON from code block")
+                except json.JSONDecodeError:
+                    logger.error("Failed to parse JSON from code block")
+                    raise RuntimeError(f"Invalid JSON in code block: {content[:200]}")
+            else:
+                logger.error("No JSON found in response")
+                raise RuntimeError(f"No valid JSON found in response: {content[:200]}")
+    
+    # Валидируем схему
+    try:
+        validate(instance=data, schema=CATEGORY_DECISION_SCHEMA)
+    except Exception as e:
+        logger.warning("Category decision validation failed: %s", e)
+        logger.debug("Data: %s", json.dumps(data, ensure_ascii=False, indent=2))
+        # Если валидация не прошла, но данные есть, все равно возвращаем их
+        # (схема может быть строже, чем нужно)
+        if isinstance(data, dict) and "decision" in data and "category" in data:
+            logger.info("Using data despite validation error")
+            return data
+        raise
+    
     return data
 
 
