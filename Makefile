@@ -36,3 +36,9 @@ dev-restart:
 
 eval:
 	python -m project.cli.eval_pdfs --input-dir pdf_for_eval --out-dir eval_results
+
+test:
+	pytest tests/ -v -s
+
+test-llm:
+	pytest tests/test_llm_providers.py -v -s
