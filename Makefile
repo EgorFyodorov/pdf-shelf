@@ -34,6 +34,10 @@ psql:
 dev-restart:
 	$(COMPOSE) restart pdf-shelf-bot
 
+migrate:
+	docker cp migrations/init.sql pdf_shelf_postgres:/tmp/init.sql
+	docker exec -it pdf_shelf_postgres psql -U bot_user -d bot_db -f /tmp/init.sql
+
 eval:
 	docker exec -it pdf_shelf_bot python -m project.tests.eval_pdfs --input-dir project/tests/pdf_for_eval --out-dir project/tests/eval_results
 
