@@ -72,13 +72,13 @@ def extract_tags_from_analysis(analysis_json: dict[str, Any]) -> List[str]:
 
 
 def format_multiple_files_summary(
-    files: List[tuple[str, float, str]], total_time: float
+    files: List[tuple[str, float, str, str]], total_time: float
 ) -> str:
     """
     Форматирование итогового сообщения при загрузке нескольких файлов.
 
     Args:
-        files: список кортежей (url, reading_time_min, main_topic)
+        files: список кортежей (url, reading_time_min, main_topic, complexity_level)
         total_time: общее время чтения в минутах
     """
 
@@ -93,9 +93,9 @@ def format_multiple_files_summary(
         "",
     ]
 
-    for idx, (url, time, topic) in enumerate(files, 1):
+    for idx, (url, time, topic, complexity) in enumerate(files, 1):
         domain = url.split("//")[-1].split("/")[0] if url else "unknown"
-        lines.append(f"{idx}. {domain} ({time:.0f} мин) — {topic}")
+        lines.append(f"{idx}. {domain} ({time:.0f} мин, {complexity}) — {topic}")
 
     lines.append("")
     lines.append(f"Всего: {total_time:.0f} минут чтения")

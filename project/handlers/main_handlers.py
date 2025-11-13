@@ -17,20 +17,25 @@ from project.keyboards.main_keyboards import create_tags_keyboard, main, time_se
 from project.parser.parser import Parser, ParserError
 from project.services.material_selector import MaterialSelector
 from project.text.main_text import (
+    delete_invalid_format,
     error_analysis,
     error_conversion,
     error_download,
     error_not_pdf,
     error_sender,
     export_ask_time,
+    export_header,
     export_no_files,
     export_no_matches,
     export_no_matches_with_tags,
     export_sending,
+    file_deleted,
+    file_not_found,
     greet,
     help_text,
     library_empty,
     library_header,
+    library_instruction,
     library_tags_header,
     pdf_processing,
     pdf_saved,
@@ -60,6 +65,7 @@ class ExportStates(StatesGroup):
     """Состояния для процесса выгрузки материалов."""
 
     waiting_for_time = State()  # Ожидание выбора времени (тема уже выбрана)
+    viewing_export = State()  # Просмотр списка подобранных файлов
 
 
 @router.message(Command("start"))
@@ -217,9 +223,14 @@ async def handle_text_message(
         await handle_export_request(msg, user_id, bot, sessionmaker)
         return
 
+    # Обработка команды удаления файла
+    if text.lower().startswith("удалить"):
+        await handle_file_deletion(msg, user_id, text, sessionmaker)
+        return
+
     # Проверка, является ли сообщение числом (номер файла)
     if text.isdigit():
-        await handle_file_number(msg, user_id, int(text), bot, sessionmaker)
+        await handle_file_number(msg, user_id, int(text), bot, sessionmaker, state)
         return
 
     urls = extract_urls(text)
@@ -236,6 +247,16 @@ async def handle_text_message(
 async def process_single_url(
     msg: Message, url: str, user_id: int, bot: Bot, sessionmaker: async_sessionmaker
 ):
+    file_repo = FileRepository(sessionmaker)
+    
+    # Проверяем, есть ли уже этот URL в библиотеке
+    existing_file = await file_repo.get_file_by_source_url(user_id, url)
+    if existing_file:
+        card = format_analysis_card(existing_file, include_url=True)
+        await msg.answer("ℹ️ Этот материал уже есть в вашей библиотеке:\n\n" + card)
+        logger.info(f"Duplicate URL skipped for user {user_id}: {url}")
+        return
+    
     processing_msg = await msg.answer(url_processing)
 
     try:
@@ -258,7 +279,6 @@ async def process_single_url(
 
             telegram_file_id = sent_msg.document.file_id
 
-            file_repo = FileRepository(sessionmaker)
             saved_file = await file_repo.create_file(
                 user_id=user_id,
                 telegram_file_id=telegram_file_id,
@@ -278,7 +298,7 @@ async def process_single_url(
 
     except ParserError as e:
         await bot.delete_message(msg.chat.id, processing_msg.message_id)
-        await msg.answer(error_conversion.format(error=str(e)))
+        await msg.answer(error_conversion)
         logger.error(f"Parser error for user {user_id}, URL {url}: {e}")
     except PDFAnalysisError as e:
         await bot.delete_message(msg.chat.id, processing_msg.message_id)
@@ -286,7 +306,7 @@ async def process_single_url(
         logger.error(f"Analysis error for user {user_id}, URL {url}: {e}")
     except Exception as e:
         await bot.delete_message(msg.chat.id, processing_msg.message_id)
-        await msg.answer(error_conversion.format(error=str(e)))
+        await msg.answer(error_conversion)
         logger.error(
             f"Error processing URL for user {user_id}, URL {url}: {e}", exc_info=True
         )
@@ -303,9 +323,17 @@ async def process_multiple_urls(
 
     file_repo = FileRepository(sessionmaker)
     successful_files = []
+    skipped_files = []
     total_time = 0.0
 
     for url in urls:
+        # Проверяем, есть ли уже этот URL в библиотеке
+        existing_file = await file_repo.get_file_by_source_url(user_id, url)
+        if existing_file:
+            skipped_files.append(url)
+            logger.info(f"Duplicate URL skipped for user {user_id}: {url}")
+            continue
+        
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
                 temp_path = Path(temp_dir) / "converted.pdf"
@@ -340,7 +368,8 @@ async def process_multiple_urls(
                 await msg.answer(card)
 
                 main_topic = tags[0] if tags else "Без темы"
-                successful_files.append((url, reading_time_min, main_topic))
+                complexity_level = analysis_json.get("complexity", {}).get("level", "средняя")
+                successful_files.append((url, reading_time_min, main_topic, complexity_level))
                 total_time += reading_time_min
 
                 logger.info(f"URL {url} converted and saved for user {user_id}")
@@ -354,6 +383,17 @@ async def process_multiple_urls(
     if successful_files:
         summary = format_multiple_files_summary(successful_files, total_time)
         await msg.answer(summary)
+    
+    if skipped_files:
+        skipped_count = len(skipped_files)
+        skipped_msg = (
+            f"ℹ️ Пропущено {skipped_count} материал (уже есть в библиотеке)"
+            if skipped_count == 1
+            else f"ℹ️ Пропущено {skipped_count} материала (уже есть в библиотеке)"
+            if 2 <= skipped_count <= 4
+            else f"ℹ️ Пропущено {skipped_count} материалов (уже есть в библиотеке)"
+        )
+        await msg.answer(skipped_msg)
 
 
 async def handle_export_request(
@@ -371,7 +411,7 @@ async def handle_export_request(
         await msg.answer(export_ask_time, reply_markup=time_selection)
         return
 
-    await export_materials(msg, user_id, bot, sessionmaker, time_minutes, tags)
+    await export_materials(msg, user_id, bot, sessionmaker, time_minutes, tags, state)
 
 
 async def export_materials(
@@ -381,8 +421,9 @@ async def export_materials(
     sessionmaker: async_sessionmaker,
     time_minutes: float,
     tags: list[str],
+    state: FSMContext,
 ):
-    """Выгружает материалы пользователю по заданному времени и тегам."""
+    """Показывает список подобранных материалов пользователю."""
     processing_msg = await msg.answer(export_sending)
 
     try:
@@ -408,32 +449,41 @@ async def export_materials(
                 )
             else:
                 await msg.answer(export_no_matches, reply_markup=main)
+            
+            await state.clear()
             return
 
-        request_repo = RequestRepository(sessionmaker)
-        file_ids = [f.file_id for f in selected_files]
-        await request_repo.create_batch_requests(user_id, file_ids)
+        # Формируем сообщение со списком подобранных файлов
+        response = export_header.format(count=len(selected_files), total_time=total_time)
+        response += "\n"
 
-        for file in selected_files:
-            try:
-                await bot.send_document(
-                    msg.chat.id,
-                    file.telegram_file_id,
+        for idx, file in enumerate(selected_files, 1):
+            tags_str = ", ".join(file.tags) if file.tags else "Без тегов"
+            complexity_level = file.analysis_json.get("complexity", {}).get("level", "средняя")
+            
+            response += f"{idx}. 📄 {file.title}\n"
+            response += f"   ⏱ {float(file.reading_time_min):.0f} мин • 📊 {complexity_level} • 🏷 {tags_str}\n"
+
+            if file.source_url:
+                url_display = (
+                    file.source_url[:50] + "..."
+                    if len(file.source_url) > 50
+                    else file.source_url
                 )
-                card = format_analysis_card(file, include_url=bool(file.source_url))
-                await msg.answer(card, disable_web_page_preview=True)
-            except Exception as e:
-                logger.error(
-                    f"Error sending file {file.file_id} to user {user_id}: {e}"
-                )
-                await msg.answer(f"❌ Ошибка при отправке файла {file.title}")
+                response += f"   🔗 {url_display}\n"
 
-        summary = format_file_list_for_export(selected_files, total_time)
+            response += "\n"
 
-        await msg.answer(summary, reply_markup=main)
+        response += "\n" + library_instruction
+
+        # Сохраняем список файлов в state
+        await state.update_data(selected_files=[f.file_id for f in selected_files])
+        await state.set_state(ExportStates.viewing_export)
+
+        await msg.answer(response, disable_web_page_preview=True, reply_markup=main)
 
         logger.info(
-            f"Exported {len(selected_files)} files to user {user_id}, "
+            f"Showed {len(selected_files)} files for export to user {user_id}, "
             f"total time: {total_time:.1f} min"
         )
 
@@ -442,6 +492,7 @@ async def export_materials(
         await msg.answer(
             f"❌ Ошибка при подборе материалов: {str(e)}", reply_markup=main
         )
+        await state.clear()
         logger.error(
             f"Error exporting materials for user {user_id}: {e}", exc_info=True
         )
@@ -503,18 +554,22 @@ async def handle_time_selection(
 
     if time_minutes:
         tags = [selected_tag] if selected_tag else []
-        await export_materials(msg, user_id, bot, sessionmaker, time_minutes, tags)
+        await export_materials(msg, user_id, bot, sessionmaker, time_minutes, tags, state)
 
 
-async def handle_file_number(
-    msg: Message,
-    user_id: int,
-    file_number: int,
-    bot: Bot,
-    sessionmaker: async_sessionmaker,
+async def handle_file_deletion(
+    msg: Message, user_id: int, text: str, sessionmaker: async_sessionmaker
 ):
-    """Обрабатывает ввод номера файла пользователем."""
+    """Обрабатывает команду удаления файла."""
     try:
+        # Парсим номер файла из команды "удалить N"
+        parts = text.lower().split()
+        if len(parts) != 2 or not parts[1].isdigit():
+            await msg.answer(delete_invalid_format)
+            return
+
+        file_number = int(parts[1])
+
         file_repo = FileRepository(sessionmaker)
         files = await file_repo.get_files_by_user(user_id)
 
@@ -528,6 +583,76 @@ async def handle_file_number(
 
         # Получаем файл по индексу (file_number - 1)
         file = files[file_number - 1]
+
+        # Удаляем файл
+        deleted = await file_repo.delete_file(file.file_id)
+
+        if deleted:
+            await msg.answer(file_deleted)
+            logger.info(
+                f"User {user_id} deleted file {file.file_id} (number {file_number})"
+            )
+        else:
+            await msg.answer(file_not_found)
+
+    except Exception as e:
+        logger.error(f"Error deleting file for user {user_id}: {e}", exc_info=True)
+        await msg.answer("❌ Ошибка при удалении файла")
+
+
+async def handle_file_number(
+    msg: Message,
+    user_id: int,
+    file_number: int,
+    bot: Bot,
+    sessionmaker: async_sessionmaker,
+    state: FSMContext,
+):
+    """Обрабатывает ввод номера файла пользователем."""
+    try:
+        file_repo = FileRepository(sessionmaker)
+        
+        # Проверяем, находимся ли мы в режиме просмотра экспорта
+        current_state = await state.get_state()
+        if current_state == ExportStates.viewing_export:
+            # Получаем файлы из state (подобранные для экспорта)
+            data = await state.get_data()
+            selected_file_ids = data.get("selected_files", [])
+            
+            if not selected_file_ids:
+                await msg.answer(library_empty)
+                await state.clear()
+                return
+            
+            if file_number < 1 or file_number > len(selected_file_ids):
+                await msg.answer(f"❌ Неверный номер. Введите число от 1 до {len(selected_file_ids)}")
+                return
+            
+            # Получаем конкретный файл по ID
+            file_id = selected_file_ids[file_number - 1]
+            file = await file_repo.get_file(file_id)
+            
+            if not file:
+                await msg.answer(file_not_found)
+                return
+            
+            # Сохраняем запрос в базе
+            request_repo = RequestRepository(sessionmaker)
+            await request_repo.create_request(user_id, file.file_id)
+        else:
+            # Обычный режим - показываем файлы из всей библиотеки
+            files = await file_repo.get_files_by_user(user_id)
+
+            if not files:
+                await msg.answer(library_empty)
+                return
+
+            if file_number < 1 or file_number > len(files):
+                await msg.answer(f"❌ Неверный номер. Введите число от 1 до {len(files)}")
+                return
+
+            # Получаем файл по индексу (file_number - 1)
+            file = files[file_number - 1]
 
         # Отправляем PDF файл
         await bot.send_document(
@@ -557,11 +682,13 @@ async def show_library(msg: Message, user_id: int, sessionmaker: async_sessionma
     response = library_header.format(count=len(files), total_time=total_time)
     response += "\n"
 
-    # Отправляем список файлов
+    # Собираем список файлов
     for idx, file in enumerate(files, 1):
         tags_str = ", ".join(file.tags) if file.tags else "Без тегов"
+        complexity_level = file.analysis_json.get("complexity", {}).get("level", "средняя")
+        
         response += f"{idx}. 📄 {file.title}\n"
-        response += f"   ⏱ {float(file.reading_time_min):.0f} мин • 🏷 {tags_str}\n"
+        response += f"   ⏱ {float(file.reading_time_min):.0f} мин • 📊 {complexity_level} • 🏷 {tags_str}\n"
 
         if file.source_url:
             url_display = (
@@ -573,25 +700,22 @@ async def show_library(msg: Message, user_id: int, sessionmaker: async_sessionma
 
         response += "\n"
 
-        # Если сообщение становится слишком длинным, отправляем его
+        # Если сообщение становится слишком длинным, отправляем его частями
         if len(response) > 3500:
             await msg.answer(response, disable_web_page_preview=True)
             response = ""
 
-    # Отправляем остаток
-    if response.strip():
-        await msg.answer(response, disable_web_page_preview=True)
+    # Добавляем инструкцию и доступные теги в конец
+    response += "\n" + library_instruction + "\n"
 
-    # Инструкция для пользователя
-    await msg.answer("📝 Введите номер файла, чтобы получить его")
-
-    # Показываем доступные теги
     selector = MaterialSelector(sessionmaker)
     available_tags = await selector.get_available_tags(user_id)
 
     if available_tags:
-        tags_msg = library_tags_header.format(tags=", ".join(available_tags))
-        await msg.answer(tags_msg)
+        response += library_tags_header.format(tags=", ".join(available_tags))
+
+    # Отправляем финальное сообщение
+    await msg.answer(response, disable_web_page_preview=True)
 
     logger.info(f"Showed library for user {user_id}: {len(files)} files")
 

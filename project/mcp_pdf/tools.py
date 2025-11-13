@@ -512,7 +512,7 @@ async def _call_llm(
         data = json.loads(content)
     except json.JSONDecodeError as e:
         logger.warning("LLM returned non-JSON, attempting to fix: %s", e)
-        logger.info("Content received (first 1000 chars): %s", content[:1000])
+        logger.info("Content received: %s", content)
         
         import re
 

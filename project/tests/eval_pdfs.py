@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+"""Скрипт для массовой оценки PDF файлов из указанной директории."""
+
 from __future__ import annotations
 
 import argparse
@@ -25,7 +28,6 @@ async def _process_one(
 ) -> dict[str, Any] | dict:
     try:
         result = await analyze_pdf_path(str(path), timeout=timeout)
-        # Save JSON
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / f"{path.stem}.json").write_text(
             json.dumps(result, ensure_ascii=False, indent=2)
@@ -34,7 +36,7 @@ async def _process_one(
     except PDFAnalysisError as e:
         logger.error("Analysis failed for %s: %s", path, e)
         return {"ok": False, "file": str(path), "error": str(e)}
-    except Exception as e:  # pragma: no cover
+    except Exception as e:
         logger.exception("Unexpected error for %s", path)
         return {"ok": False, "file": str(path), "error": str(e)}
 
@@ -75,12 +77,10 @@ async def main_async(args: argparse.Namespace) -> int:
 
     results = await asyncio.gather(*(wrapped(p) for p in files))
 
-    # Print per-file summary
     print("\nРезультаты:")
     for e in results:
         print(_fmt_summary(e))
 
-    # Totals
     ok_count = sum(1 for e in results if e.get("ok"))
     print(
         f"\nИтого: OK={ok_count}, FAIL={len(results) - ok_count}. JSON сохранён в {out_dir}."
@@ -90,15 +90,17 @@ async def main_async(args: argparse.Namespace) -> int:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Прогон анализа PDF из папки pdf_for_eval"
+        description="Прогон анализа PDF из папки project/tests/pdf_for_eval"
     )
     parser.add_argument(
         "--input-dir",
-        default="pdf_for_eval",
-        help="Директория с PDF (по умолчанию pdf_for_eval)",
+        default="project/tests/pdf_for_eval",
+        help="Директория с PDF (по умолчанию project/tests/pdf_for_eval)",
     )
     parser.add_argument(
-        "--out-dir", default="eval_results", help="Куда сохранять JSON результаты"
+        "--out-dir",
+        default="project/tests/eval_results",
+        help="Куда сохранять JSON результаты",
     )
     parser.add_argument(
         "--concurrency",
@@ -125,3 +127,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

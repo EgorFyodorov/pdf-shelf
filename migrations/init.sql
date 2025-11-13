@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS files (
 CREATE TABLE IF NOT EXISTS requests (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id INTEGER NOT NULL REFERENCES users(user_id),
-    file_id UUID NOT NULL REFERENCES files(file_id)
+    file_id UUID NOT NULL REFERENCES files(file_id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_files_user_id ON files(user_id);

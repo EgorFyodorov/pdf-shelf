@@ -41,7 +41,9 @@ class File(Base):
     )
 
     user: Mapped["User"] = relationship("User", back_populates="files")
-    requests: Mapped[list["Request"]] = relationship("Request", back_populates="file")
+    requests: Mapped[list["Request"]] = relationship(
+        "Request", back_populates="file", cascade="all, delete-orphan"
+    )
 
 
 class Request(Base):

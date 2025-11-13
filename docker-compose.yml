@@ -40,13 +40,12 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_HOST: ${POSTGRES_HOST}
       POSTGRES_PORT: ${POSTGRES_PORT}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GIGACHAT_AUTH_KEY: ${GIGACHAT_AUTH_KEY:-}
       USE_MOCK_ANALYSIS: ${USE_MOCK_ANALYSIS:-false}
     volumes:
       - ./project:/app/project
       - ./bot.py:/app/bot.py
       - ./config.yaml:/app/config.yaml
-      - ./output:/app/output
     restart: unless-stopped
 
 volumes:

@@ -14,6 +14,18 @@ class FileRepository:
     def __init__(self, sessionmaker: async_sessionmaker):
         self.sessionmaker = sessionmaker
 
+    async def get_file_by_source_url(
+        self, user_id: int, source_url: str
+    ) -> Optional[File]:
+        """Проверяет, есть ли уже файл с таким source_url у пользователя."""
+        async with self.sessionmaker() as session:
+            result = await session.execute(
+                select(File).where(
+                    File.user_id == user_id, File.source_url == source_url
+                )
+            )
+            return result.scalar_one_or_none()
+
     async def create_file(
         self,
         user_id: int,

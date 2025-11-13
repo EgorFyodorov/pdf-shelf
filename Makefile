@@ -1,4 +1,4 @@
-.PHONY: build up down run logs ps restart migrate shell-bot shell-db psql dev-restart eval
+.PHONY: build up down run logs ps restart migrate shell-bot shell-db psql dev-restart eval test-parser test-category test test-llm
 
 COMPOSE ?= docker compose
 
@@ -35,10 +35,21 @@ dev-restart:
 	$(COMPOSE) restart pdf-shelf-bot
 
 eval:
-	python -m project.cli.eval_pdfs --input-dir pdf_for_eval --out-dir eval_results
+	docker exec -it pdf_shelf_bot python -m project.tests.eval_pdfs --input-dir project/tests/pdf_for_eval --out-dir project/tests/eval_results
+
+test-parser:
+	docker exec -it pdf_shelf_bot python -m project.tests.test_parser_examples
+
+test-category:
+	@if [ -z "$(PDF)" ]; then \
+		echo "Использование: make test-category PDF=<путь_к_pdf>"; \
+		echo "Пример: make test-category PDF=project/tests/pdf_for_eval/llm-as-judge.pdf"; \
+		exit 1; \
+	fi
+	docker exec -it pdf_shelf_bot python -m project.tests.test_category $(PDF)
 
 test:
-	pytest tests/ -v -s
+	docker exec -it pdf_shelf_bot pytest project/tests/ -v -s
 
 test-llm:
-	pytest tests/test_llm_providers.py -v -s
+	docker exec -it pdf_shelf_bot pytest project/tests/test_llm_providers.py -v -s
