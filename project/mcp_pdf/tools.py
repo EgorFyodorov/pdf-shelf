@@ -63,6 +63,14 @@ def _normalize_llm_response(
         or normalized_data.get("объем")
         or {}
     )
+    if not isinstance(volume_raw, dict):
+        if isinstance(volume_raw, str):
+            logger.debug("volume_raw is a string '%s', converting to empty dict", volume_raw)
+        elif isinstance(volume_raw, (int, float)):
+            logger.debug("volume_raw is a number %s, converting to empty dict", volume_raw)
+        else:
+            logger.warning("volume_raw is not a dict: %s (type: %s), using empty dict", volume_raw, type(volume_raw))
+        volume_raw = {}
     volume: dict[str, Any] = {}
 
     # Маппинг полей volume
@@ -82,42 +90,74 @@ def _normalize_llm_response(
 
     for eng_key, possible_keys in volume_mapping.items():
         for key in possible_keys:
-            if key in volume_raw:
-                volume[eng_key] = volume_raw[key]
+            if isinstance(volume_raw, dict) and key in volume_raw:
+                value = volume_raw[key]
+                # Нормализуем char_count - заменяем null/None на 0 или вычисляем
+                if eng_key == "char_count" and (value is None or value == 0):
+                    _, cc = count_words_and_chars(text)
+                    volume[eng_key] = cc if cc > 0 else 0
+                else:
+                    volume[eng_key] = value
                 break
 
     # Используем значения из meta как fallback
     if "word_count" not in volume:
         volume["word_count"] = meta.get("precomputed_word_count") or 0
-    if "char_count" not in volume:
+    if "char_count" not in volume or volume["char_count"] is None or volume["char_count"] == 0:
         _, cc = count_words_and_chars(text)
-        volume["char_count"] = cc
+        volume["char_count"] = cc if cc > 0 else 0
     if "page_count" not in volume:
         volume["page_count"] = meta.get("page_count")
     if "byte_size" not in volume:
         volume["byte_size"] = meta.get("byte_size")
-    if "reading_time_min" not in volume:
+    if "reading_time_min" not in volume or volume["reading_time_min"] is None or volume["reading_time_min"] == 0:
         # Вычисляем время чтения
         words = volume.get("word_count", 0)
         lang = result["doc_language"]
         volume["reading_time_min"] = estimate_reading_time_min(lang, words)
+    # Убеждаемся, что reading_time_min - это число, а не None
+    if volume["reading_time_min"] is None:
+        volume["reading_time_min"] = 0.0
+    volume["reading_time_min"] = float(volume["reading_time_min"])
 
-    # Метод
-    volume["method"] = {
-        "word_count": (
-            "content_based_full_scan"
-            if meta.get("__reading_time_breakdown")
-            else "precomputed"
-        ),
-        "char_count": "estimated_no_spaces",
-    }
+    # Метод - убеждаемся, что это объект с нужными полями
+    method_raw = volume.get("method")
+    if isinstance(method_raw, dict):
+        volume["method"] = {
+            "word_count": method_raw.get("word_count") or (
+                "content_based_full_scan"
+                if meta.get("__reading_time_breakdown")
+                else "precomputed"
+            ),
+            "char_count": method_raw.get("char_count") or "estimated_no_spaces",
+        }
+    else:
+        # Если method - строка или другой тип, создаем правильный объект
+        volume["method"] = {
+            "word_count": (
+                "content_based_full_scan"
+                if meta.get("__reading_time_breakdown")
+                else "precomputed"
+            ),
+            "char_count": "estimated_no_spaces",
+        }
 
     result["volume"] = volume
 
-    # Нормализуем complexity
     complexity_raw = (
         normalized_data.get("complexity") or normalized_data.get("сложность") or {}
     )
+    if not isinstance(complexity_raw, dict):
+        if isinstance(complexity_raw, str):
+            logger.debug("complexity_raw is a string '%s', converting to dict with level", complexity_raw)
+            # Преобразуем строку в dict с полем level
+            complexity_raw = {"level": complexity_raw}
+        elif isinstance(complexity_raw, (int, float)):
+            logger.debug("complexity_raw is a number %s, converting to empty dict", complexity_raw)
+            complexity_raw = {}
+        else:
+            logger.warning("complexity_raw is not a dict: %s (type: %s), using empty dict", complexity_raw, type(complexity_raw))
+            complexity_raw = {}
     complexity: dict[str, Any] = {}
 
     # Маппинг полей complexity
@@ -131,7 +171,7 @@ def _normalize_llm_response(
 
     for eng_key, possible_keys in complexity_mapping.items():
         for key in possible_keys:
-            if key in complexity_raw:
+            if isinstance(complexity_raw, dict) and key in complexity_raw:
                 value = complexity_raw[key]
                 # Преобразуем score если это float в диапазоне 0-1
                 if eng_key == "score" and isinstance(value, (float, int)):
@@ -143,10 +183,27 @@ def _normalize_llm_response(
                         complexity[eng_key] = int((value / 5) * 100)
                     else:
                         complexity[eng_key] = int(value)
+                elif eng_key == "estimated_grade":
+                    # estimated_grade должен быть строкой
+                    if isinstance(value, (int, float)):
+                        complexity[eng_key] = str(int(value))
+                    elif value is None:
+                        complexity[eng_key] = ""
+                    else:
+                        complexity[eng_key] = str(value)
                 elif eng_key == "drivers" and isinstance(value, list):
                     complexity[eng_key] = value
                 elif eng_key == "drivers" and isinstance(value, str):
                     complexity[eng_key] = [value]
+                elif eng_key == "notes":
+                    # notes должен быть строкой
+                    if isinstance(value, list):
+                        # Если это массив, объединяем в строку
+                        complexity[eng_key] = ", ".join(str(v) for v in value) if value else ""
+                    elif value is None:
+                        complexity[eng_key] = ""
+                    else:
+                        complexity[eng_key] = str(value)
                 else:
                     complexity[eng_key] = value
                 break
@@ -158,12 +215,20 @@ def _normalize_llm_response(
         complexity["level"] = "средняя"
     if "estimated_grade" not in complexity:
         complexity["estimated_grade"] = "школьный"
+    else:
+        if not isinstance(complexity["estimated_grade"], str):
+            complexity["estimated_grade"] = str(complexity["estimated_grade"])
     if "drivers" not in complexity:
         complexity["drivers"] = []
     if "notes" not in complexity:
         complexity["notes"] = (
             complexity_raw.get("basis") or complexity_raw.get("description") or ""
         )
+    else:
+        if isinstance(complexity["notes"], list):
+            complexity["notes"] = ", ".join(str(v) for v in complexity["notes"]) if complexity["notes"] else ""
+        elif not isinstance(complexity["notes"], str):
+            complexity["notes"] = str(complexity["notes"]) if complexity["notes"] is not None else ""
 
     result["complexity"] = complexity
 
@@ -213,6 +278,9 @@ def _normalize_llm_response(
         or data.get("категория")  # Проверяем оригинальные данные с русским ключом
         or {}
     )
+    if not isinstance(category_raw, dict):
+        logger.warning("category_raw is not a dict: %s (type: %s), using empty dict", category_raw, type(category_raw))
+        category_raw = {}
 
     category: dict[str, Any] = {}
 
@@ -275,6 +343,10 @@ def _normalize_llm_response(
     limitations_raw = (
         normalized_data.get("limitations") or normalized_data.get("ограничения") or {}
     )
+    # Убеждаемся, что limitations_raw - это dict
+    if not isinstance(limitations_raw, dict):
+        logger.warning("limitations_raw is not a dict: %s (type: %s), using empty dict", limitations_raw, type(limitations_raw))
+        limitations_raw = {}
     limitations: dict[str, Any] = {}
 
     w1, _ = count_words_and_chars(text)
@@ -290,169 +362,113 @@ def _normalize_llm_response(
     return result
 
 
-# --- Gemini integration (google-genai) -------------------------------------
-try:
-    # Use new Google Gen AI SDK
-    from google import genai  # type: ignore
-except Exception:  # pragma: no cover - optional at runtime
-    genai = None  # type: ignore
+# --- GigaChat integration ---------------------------------------------------
+from .gigachat_client import get_gigachat_client
 
 
-async def _call_gemini(
+async def _call_gigachat(
     text: str, meta: dict[str, Any], max_retries: int = 5
 ) -> dict[str, Any]:
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key or genai is None:
-        raise RuntimeError("Gemini is not configured or google-genai is missing")
-    model_name = "gemini-2.5-flash"
+    """Вызов GigaChat для анализа текста."""
+    client = get_gigachat_client()
 
     # Build prompt
     sys_prompt = PDF_MCP_SYSTEM_PROMPT
     user_prompt = build_user_prompt(text, meta)
 
-    # google-genai client is synchronous; wrap in a thread for async compatibility
-    import asyncio
+    # Генерируем контент через GigaChat API (retry логика уже внутри клиента)
+    try:
+        content = await client.generate_content(
+            prompt=user_prompt,
+            system_prompt=sys_prompt,
+            max_retries=max_retries,
+        )
+    except Exception as e:
+        logger.warning("GigaChat analysis failed: %s", e)
+        raise RuntimeError(f"GigaChat API error: {e}") from e
 
-    def _generate_sync() -> str:
-        # Use new Google Gen AI SDK
-        client = genai.Client(api_key=api_key)
-
-        # Отключаем AFC (Automatic Function Calling), так как мы не используем функции
-        afc_config = {"automatic_function_calling": {"disable": True}}
-
-        # Get model and generate content
-        try:
-            # Approach 1: Use get_model() method (recommended for new SDK)
-            model = client.get_model(model_name)
-            # Try with system_instruction parameter
-            try:
-                resp = model.generate_content(
-                    user_prompt,
-                    system_instruction=sys_prompt,
-                    config=afc_config,
-                )
-            except TypeError:
-                # Fallback: system_instruction might not be supported, prepend to prompt
-                try:
-                    resp = model.generate_content(
-                        f"{sys_prompt}\n\n{user_prompt}",
-                        config=afc_config,
-                    )
-                except TypeError:
-                    # Если config не поддерживается, пробуем без него
-                    resp = model.generate_content(f"{sys_prompt}\n\n{user_prompt}")
-        except AttributeError:
-            # Approach 2: Try using models.generate_content directly
-            try:
-                config = {"system_instruction": sys_prompt, **afc_config}
-                resp = client.models.generate_content(
-                    model=model_name,
-                    contents=user_prompt,
-                    config=config,
-                )
-            except (AttributeError, TypeError):
-                # Approach 3: Fallback to GenerativeModel (if still available)
-                genai.configure(api_key=api_key)
-                model = genai.GenerativeModel(
-                    model_name=model_name,
-                    system_instruction=sys_prompt,
-                )
-                try:
-                    resp = model.generate_content(
-                        user_prompt, generation_config=afc_config
-                    )
-                except TypeError:
-                    # Если generation_config не поддерживается, пробуем без него
-                    resp = model.generate_content(user_prompt)
-
-        # Extract text from response
-        try:
-            # Try standard response.text attribute
-            content = resp.text
-        except AttributeError:
-            # Fallback: try to get text from response structure
-            try:
-                if hasattr(resp, "candidates") and resp.candidates:
-                    candidate = resp.candidates[0]
-                    if hasattr(candidate, "content") and candidate.content:
-                        parts = candidate.content.parts
-                        if parts and hasattr(parts[0], "text"):
-                            content = parts[0].text
-                        else:
-                            content = None
-                elif hasattr(resp, "output_text"):
-                    content = resp.output_text
-                else:
-                    content = None
-            except Exception:
-                content = None
-
-        if not content:
-            # Last resort: try to convert to string or dict
-            try:
-                if hasattr(resp, "to_dict"):
-                    data = resp.to_dict()
-                    content = data.get("text") or data.get("output_text") or str(data)
-                else:
-                    content = str(resp)
-            except Exception:
-                content = "{}"
-
-        return content or "{}"
-
-    # Retry логика для временных ошибок API (503, 429, overloaded)
-    content = None
-    last_error = None
-    for attempt in range(max_retries):
-        try:
-            content = await asyncio.to_thread(_generate_sync)
-            # Если получили контент, выходим из цикла retry
-            break
-        except Exception as e:
-            last_error = e
-            error_str = str(e).lower()
-            error_msg = str(e)
-
-            # Проверяем, это временная ошибка API?
-            is_temporary_error = (
-                "503" in error_msg
-                or "429" in error_msg
-                or "overloaded" in error_str
-                or "unavailable" in error_str
-                or "rate limit" in error_str
-                or "quota" in error_str
-            )
-
-            if is_temporary_error and attempt < max_retries - 1:
-                # Экспоненциальная задержка: 2, 4, 8 секунд
-                wait_time = 2 ** (attempt + 1)
-                logger.info(
-                    f"API временно недоступен (попытка {attempt + 1}/{max_retries}), "
-                    f"повтор через {wait_time}с... Ошибка: {error_msg[:100]}"
-                )
-                await asyncio.sleep(wait_time)
-                continue
-            else:
-                # Если не временная ошибка или кончились попытки - выбрасываем
-                raise
-
-    # Если после всех попыток content не получен, выбрасываем последнюю ошибку
-    if content is None:
-        if last_error:
-            raise last_error
-        raise RuntimeError("Failed to get content from Gemini API")
-
+    # Парсим JSON
+    data = None
     try:
         data = json.loads(content)
     except json.JSONDecodeError as e:
-        logger.warning("Gemini returned non-JSON, attempting to fix: %s", e)
-        # naive repair: locate first JSON object
+        logger.warning("GigaChat returned non-JSON, attempting to fix: %s", e)
+        logger.info("Content received (first 1000 chars): %s", content[:1000])
+        
         import re
+        
+        # Пробуем найти JSON в markdown code block
+        json_match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", content, re.MULTILINE)
+        if json_match:
+            try:
+                data = json.loads(json_match.group(1))
+                logger.info("Successfully extracted JSON from markdown code block")
+            except json.JSONDecodeError:
+                logger.warning("Failed to parse JSON from markdown code block")
+        
+        # Если не получилось, пробуем найти первый JSON объект
+        if data is None:
+            # Ищем открывающую скобку и пытаемся найти соответствующий закрывающий
+            start_idx = content.find('{')
+            if start_idx != -1:
+                # Пробуем найти закрывающую скобку, считая вложенные скобки
+                brace_count = 0
+                end_idx = start_idx
+                for i in range(start_idx, len(content)):
+                    if content[i] == '{':
+                        brace_count += 1
+                    elif content[i] == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            end_idx = i + 1
+                            break
+                
+                if end_idx > start_idx:
+                    json_str = content[start_idx:end_idx]
+                    try:
+                        data = json.loads(json_str)
+                        logger.info("Successfully extracted JSON object from response")
+                    except json.JSONDecodeError as parse_err:
+                        logger.warning("Failed to parse extracted JSON: %s", parse_err)
+                        logger.debug("Extracted JSON string: %s", json_str[:500])
+        
+        # Если все еще не получилось, пробуем исправить распространенные ошибки
+        if data is None:
+            # Удаляем комментарии (однострочные и многострочные)
+            cleaned = re.sub(r'//.*?$', '', content, flags=re.MULTILINE)
+            cleaned = re.sub(r'/\*.*?\*/', '', cleaned, flags=re.DOTALL)
+            # Удаляем trailing commas перед закрывающими скобками
+            cleaned = re.sub(r',\s*}', '}', cleaned)
+            cleaned = re.sub(r',\s*]', ']', cleaned)
+            
+            # Пробуем закрыть незакрытые скобки
+            open_braces = cleaned.count('{')
+            close_braces = cleaned.count('}')
+            open_brackets = cleaned.count('[')
+            close_brackets = cleaned.count(']')
+            
+            if open_braces > close_braces:
+                cleaned += '}' * (open_braces - close_braces)
+            if open_brackets > close_brackets:
+                cleaned += ']' * (open_brackets - close_brackets)
+            
+            try:
+                data = json.loads(cleaned)
+                logger.info("Successfully parsed JSON after cleaning and fixing braces")
+            except json.JSONDecodeError as parse_err:
+                logger.error("Failed to parse JSON even after cleaning: %s", parse_err)
+                logger.debug("Cleaned content: %s", cleaned[:1000])
+                raise RuntimeError(f"Failed to parse JSON from GigaChat response. Error: {e}. Content preview: {content[:500]}")
+    
+    # Проверяем, что data не None
+    if data is None:
+        logger.error("Failed to parse JSON from GigaChat response")
+        raise RuntimeError(f"Failed to parse JSON from GigaChat response. Content preview: {content[:500]}")
 
-        m = re.search(r"\{[\s\S]*\}$", content)
-        if not m:
-            raise
-        data = json.loads(m.group(0))
+    # Проверяем, что data - это dict, а не строка или другой тип
+    if not isinstance(data, dict):
+        logger.error("GigaChat returned non-dict data: %s (type: %s)", data, type(data))
+        raise RuntimeError(f"Expected dict from GigaChat, got {type(data).__name__}: {str(data)[:200]}")
 
     # Нормализуем ответ LLM перед валидацией
     normalized_data = None
@@ -486,161 +502,39 @@ async def _call_gemini(
             raise validation_error
 
 
-async def _call_gemini_category(
+async def _call_gigachat_category(
     text: str,
     meta: dict[str, Any],
     existing_categories: list[dict] | None,
     max_retries: int = 5,
 ) -> dict[str, Any]:
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key or genai is None:
-        raise RuntimeError("Gemini is not configured or google-genai is missing")
-    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    """Вызов GigaChat для категоризации документа."""
+    client = get_gigachat_client()
 
     sys_prompt = "PDF-MCP: категоризация документов (классифицировать в существующую или создать новую категорию). Возвращай строго валидный JSON."
     user_prompt = build_category_prompt(text, meta, existing_categories or [])
 
-    import asyncio
-
-    def _generate_sync() -> str:
-        # Use new Google Gen AI SDK
-        client = genai.Client(api_key=api_key)
-
-        # Отключаем AFC (Automatic Function Calling), так как мы не используем функции
-        afc_config = {"automatic_function_calling": {"disable": True}}
-
-        # Get model and generate content
-        try:
-            # Approach 1: Use get_model() method (recommended for new SDK)
-            model = client.get_model(model_name)
-            # Try with system_instruction parameter
-            try:
-                resp = model.generate_content(
-                    user_prompt,
-                    system_instruction=sys_prompt,
-                    config=afc_config,
-                )
-            except TypeError:
-                # Fallback: system_instruction might not be supported, prepend to prompt
-                try:
-                    resp = model.generate_content(
-                        f"{sys_prompt}\n\n{user_prompt}",
-                        config=afc_config,
-                    )
-                except TypeError:
-                    # Если config не поддерживается, пробуем без него
-                    resp = model.generate_content(f"{sys_prompt}\n\n{user_prompt}")
-        except AttributeError:
-            # Approach 2: Try using models.generate_content directly
-            try:
-                config = {"system_instruction": sys_prompt, **afc_config}
-                resp = client.models.generate_content(
-                    model=model_name,
-                    contents=user_prompt,
-                    config=config,
-                )
-            except (AttributeError, TypeError):
-                # Approach 3: Fallback to GenerativeModel (if still available)
-                genai.configure(api_key=api_key)
-                model = genai.GenerativeModel(
-                    model_name=model_name,
-                    system_instruction=sys_prompt,
-                )
-                try:
-                    resp = model.generate_content(
-                        user_prompt, generation_config=afc_config
-                    )
-                except TypeError:
-                    # Если generation_config не поддерживается, пробуем без него
-                    resp = model.generate_content(user_prompt)
-
-        # Extract text from response
-        try:
-            # Try standard response.text attribute
-            content = resp.text
-        except AttributeError:
-            # Fallback: try to get text from response structure
-            try:
-                if hasattr(resp, "candidates") and resp.candidates:
-                    candidate = resp.candidates[0]
-                    if hasattr(candidate, "content") and candidate.content:
-                        parts = candidate.content.parts
-                        if parts and hasattr(parts[0], "text"):
-                            content = parts[0].text
-                        else:
-                            content = None
-                elif hasattr(resp, "output_text"):
-                    content = resp.output_text
-                else:
-                    content = None
-            except Exception:
-                content = None
-
-        if not content:
-            # Last resort: try to convert to string or dict
-            try:
-                if hasattr(resp, "to_dict"):
-                    data = resp.to_dict()
-                    content = data.get("text") or data.get("output_text") or str(data)
-                else:
-                    content = str(resp)
-            except Exception:
-                content = "{}"
-
-        return content or "{}"
-
-    # Retry логика для временных ошибок API (503, 429, overloaded)
-    content = None
-    last_error = None
-    for attempt in range(max_retries):
-        try:
-            content = await asyncio.to_thread(_generate_sync)
-            # Если получили контент, выходим из цикла retry
-            break
-        except Exception as e:
-            last_error = e
-            error_str = str(e).lower()
-            error_msg = str(e)
-
-            # Проверяем, это временная ошибка API?
-            is_temporary_error = (
-                "503" in error_msg
-                or "429" in error_msg
-                or "overloaded" in error_str
-                or "unavailable" in error_str
-                or "rate limit" in error_str
-                or "quota" in error_str
-            )
-
-            if is_temporary_error and attempt < max_retries - 1:
-                # Экспоненциальная задержка: 2, 4, 8 секунд
-                wait_time = 2 ** (attempt + 1)
-                logger.info(
-                    f"API временно недоступен для категоризации (попытка {attempt + 1}/{max_retries}), "
-                    f"повтор через {wait_time}с... Ошибка: {error_msg[:100]}"
-                )
-                await asyncio.sleep(wait_time)
-                continue
-            else:
-                # Если не временная ошибка или кончились попытки - выбрасываем
-                raise
-
-    # Если после всех попыток content не получен, выбрасываем последнюю ошибку
-    if content is None:
-        if last_error:
-            raise last_error
-        raise RuntimeError("Failed to get content from Gemini API")
+    # Генерируем контент через GigaChat API (retry логика уже внутри клиента)
+    try:
+        content = await client.generate_content(
+            prompt=user_prompt,
+            system_prompt=sys_prompt,
+            max_retries=max_retries,
+        )
+    except Exception as e:
+        logger.warning("GigaChat category decision failed: %s", e)
+        raise RuntimeError(f"GigaChat API error: {e}") from e
 
     # Проверяем, что контент не пустой
     if not content or content.strip() == "" or content.strip() == "{}":
-        logger.warning("Gemini returned empty content for category decision")
-        raise RuntimeError("Empty response from Gemini")
+        logger.warning("GigaChat returned empty content for category decision")
+        raise RuntimeError("Empty response from GigaChat")
 
     # Пробуем распарсить JSON
     try:
         data = json.loads(content)
     except json.JSONDecodeError as e:
-        logger.warning("Gemini returned non-JSON for category decision: %s", e)
+        logger.warning("GigaChat returned non-JSON for category decision: %s", e)
         logger.debug(
             "Content received: %s", content[:500]
         )  # Первые 500 символов для отладки
@@ -850,7 +744,7 @@ async def analyze_text_tool(
         return _fallback_simple_analysis(text, meta)
 
     try:
-        data = await _call_gemini(text, llm_meta)
+        data = await _call_gigachat(text, llm_meta)
         try:
             breakdown = meta.get("__reading_time_breakdown") or {}
             words = int(
@@ -898,7 +792,7 @@ async def analyze_text_tool(
             logger.debug("Postprocess reading time failed: %s", e)
         return data
     except Exception as e:
-        logger.warning("Gemini analysis failed, falling back. Error: %s", e)
+        logger.warning("GigaChat analysis failed, falling back. Error: %s", e)
         return _fallback_simple_analysis(text, meta)
 
 
@@ -923,9 +817,9 @@ async def classify_or_create_category_tool(
     meta = meta or {}
     llm_meta = {k: v for k, v in meta.items() if not str(k).startswith("__")}
     try:
-        return await _call_gemini_category(text, llm_meta, existing_categories or [])
+        return await _call_gigachat_category(text, llm_meta, existing_categories or [])
     except Exception as e:
-        logger.warning("Gemini category decision failed: %s", e)
+        logger.warning("GigaChat category decision failed: %s", e)
         # Фолбэк без LLM — нейтральная заглушка
         return {
             "decision": "created_new",

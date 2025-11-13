@@ -103,8 +103,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--concurrency",
         type=int,
-        default=3,
-        help="Количество одновременных задач (по умолчанию 3)",
+        default=1,
+        help="Количество одновременных задач (по умолчанию 1)",
     )
     parser.add_argument(
         "--timeout",
