@@ -27,8 +27,16 @@ class PostgresSection:
 
 
 @dataclass
+class ParserSection:
+    timeout: int = 120000
+    wait_until: str = "networkidle"
+    pdf_format: str = "A4"
+
+
+@dataclass
 class Config:
     app: AppSection
     bot: BotSection
     logger: LoggerSection
     postgres: PostgresSection
+    parser: ParserSection

@@ -11,3 +11,7 @@ postgres:
   database: bot_db
   host: pdf-shelf-postgres
   port: 5432
+parser:
+  timeout: 60000
+  wait_until: "load"
+  pdf_format: "A4"

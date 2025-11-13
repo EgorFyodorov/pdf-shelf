@@ -21,7 +21,6 @@ class MaterialSelector:
         user_id: int,
         time_minutes: float,
         tags: Optional[List[str]] = None,
-        exclude_recent: int = 3,
     ) -> tuple[List[File], float]:
         """
         Подбирает материалы для пользователя по времени и тегам.
@@ -30,50 +29,23 @@ class MaterialSelector:
             user_id: ID пользователя
             time_minutes: доступное время в минутах
             tags: список тегов для фильтрации (None = без фильтрации)
-            exclude_recent: количество последних выданных файлов для исключения
 
         Returns:
             tuple[List[File], float]: (список файлов, общее время чтения)
         """
-        # Получаем список недавно выданных файлов для исключения
-        recently_sent = await self.file_repo.get_recently_sent_files(
-            user_id, limit=exclude_recent
-        )
-
-        logger.info(
-            f"User {user_id}: recently sent files={recently_sent}, exclude_recent={exclude_recent}"
-        )
-
-        # Получаем файлы пользователя с фильтрацией
+        # Получаем файлы пользователя с фильтрацией по тегам
         if tags:
             files = await self.file_repo.get_files_by_user_filtered(
                 user_id=user_id,
                 tags=tags,
-                exclude_file_ids=recently_sent,
+                exclude_file_ids=None,
             )
         else:
-            all_files = await self.file_repo.get_files_by_user(user_id)
-            files = [f for f in all_files if f.file_id not in recently_sent]
+            files = await self.file_repo.get_files_by_user(user_id)
 
         logger.info(
-            f"User {user_id}: available files count={len(files)}, time_limit={time_minutes}"
+            f"User {user_id}: available files count={len(files)}, time_limit={time_minutes}, tags={tags}"
         )
-
-        # Если после исключения не осталось файлов, попробуем без исключения
-        if not files:
-            logger.info(
-                f"No files after exclusion, trying without exclusion for user {user_id}"
-            )
-            if tags:
-                files = await self.file_repo.get_files_by_user_filtered(
-                    user_id=user_id,
-                    tags=tags,
-                    exclude_file_ids=None,
-                )
-            else:
-                files = await self.file_repo.get_files_by_user(user_id)
-
-            logger.info(f"User {user_id}: files without exclusion count={len(files)}")
 
         if not files:
             logger.info(f"No files found for user {user_id} with tags={tags}")
@@ -127,17 +99,19 @@ class MaterialSelector:
                 logger.info(
                     f"  ✓ Selected: {file.title} ({file_time:.1f} min), total: {total_time:.1f}"
                 )
-            # Если еще ничего не выбрано, берем первый файл даже если он немного больше
-            # (в пределах 30% от лимита)
-            elif not selected and file_time <= time_limit * 1.3:
-                selected.append(file)
-                total_time += file_time
-                logger.info(
-                    f"  ✓ Selected (over limit): {file.title} ({file_time:.1f} min), total: {total_time:.1f}"
-                )
-                break
             else:
-                logger.info(f"  ✗ Skipped: {file.title} ({file_time:.1f} min)")
+                logger.info(f"  ✗ Skipped: {file.title} ({file_time:.1f} min) - would exceed limit")
+        
+        # Если ничего не выбрано, берем первый файл даже если он немного больше
+        # (в пределах 50% от лимита)
+        if not selected and sorted_files:
+            first_file = sorted_files[0]
+            first_file_time = float(first_file.reading_time_min)
+            if first_file_time <= time_limit * 1.5:
+                selected.append(first_file)
+                logger.info(
+                    f"  ✓ Selected (fallback): {first_file.title} ({first_file_time:.1f} min), exceeds limit by {first_file_time - time_limit:.1f} min"
+                )
 
         return selected
 

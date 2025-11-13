@@ -4,6 +4,41 @@ from typing import Any, List
 from project.database.models import File
 
 
+def clean_page_title(title: str) -> str:
+    """Очищает заголовок страницы от лишних суффиксов и символов."""
+    if not title:
+        return ""
+    
+    # Убираем распространенные суффиксы сайтов (используем более специфичные паттерны)
+    suffixes = [
+        r"\s*[/\\]\s*Хабр\s*$",  # " / Хабр" или " \ Хабр" в конце
+        r"\s*[-—•·]\s*Хабр.*$",  # " - Хабр" или " — Хабр"
+        r"\s*[/\\]\s*Habr\s*$",
+        r"\s*[-—•·]\s*Habr.*$",
+        r"\s*[/\\]\s*Medium\s*$",
+        r"\s*[-—•·]\s*Medium.*$",
+        r"\s*[/\\]\s*VC\.ru\s*$",
+        r"\s*[-—•·]\s*VC\.ru.*$",
+        r"\s*[/\\]\s*The Bell\s*$",
+        r"\s*[-—•·]\s*The Bell.*$",
+        r"\s*\|\s*[A-Za-zА-Яа-я0-9\s]+\s*$",  # " | Название сайта" только в конце
+    ]
+    
+    cleaned = title
+    for suffix in suffixes:
+        cleaned = re.sub(suffix, "", cleaned, flags=re.IGNORECASE)
+    
+    # Убираем лишние пробелы
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    
+    # Ограничиваем длину
+    max_length = 100
+    if len(cleaned) > max_length:
+        cleaned = cleaned[:max_length].rsplit(" ", 1)[0] + "..."
+    
+    return cleaned or "Документ"
+
+
 def format_analysis_card(file: File, include_url: bool = True) -> str:
     """Форматирование карточки анализа файла для отправки пользователю."""
 
@@ -58,15 +93,15 @@ def extract_urls(text: str) -> List[str]:
 
 
 def extract_tags_from_analysis(analysis_json: dict[str, Any]) -> List[str]:
-    """Извлечение тегов из analysis_json (из topics)."""
+    """Извлечение тегов из analysis_json (из category.label)."""
 
-    topics = analysis_json.get("topics", [])
     tags = []
-
-    for topic in topics:
-        label = topic.get("label")
-        if label:
-            tags.append(label)
+    
+    # Извлекаем из category.label
+    category = analysis_json.get("category", {})
+    category_label = category.get("label")
+    if category_label:
+        tags.append(category_label)
 
     return tags
 

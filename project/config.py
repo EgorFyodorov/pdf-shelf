@@ -9,6 +9,7 @@ from project.schemas.config_schemas import (
     BotSection,
     Config,
     LoggerSection,
+    ParserSection,
     PostgresSection,
 )
 
@@ -21,6 +22,7 @@ def load_config(path: Path) -> Config:
         bot=BotSection(**data["bot"]),
         logger=LoggerSection(**data["logger"]),
         postgres=PostgresSection(**data["postgres"]),
+        parser=ParserSection(**data.get("parser", {})),
     )
 
 

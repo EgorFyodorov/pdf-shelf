@@ -2,11 +2,11 @@ import logging
 import uuid
 from typing import List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.orm import selectinload
 
-from project.database.models import Request
+from project.database.models import File, Request
 
 logger = logging.getLogger(__name__)
 
@@ -77,3 +77,26 @@ class RequestRepository:
                 logger.info(f"Request deleted: {request_id}")
                 return True
             return False
+
+    async def get_recent_requested_files(self, user_id: int, limit: int = 5) -> List[File]:
+        """Получает последние уникальные файлы, запрошенные пользователем."""
+        async with self.sessionmaker() as session:
+            # Подзапрос для получения последнего request_id для каждого file_id
+            subquery = (
+                select(
+                    Request.file_id,
+                    func.max(Request.created_at).label("last_request_time")
+                )
+                .where(Request.user_id == user_id)
+                .group_by(Request.file_id)
+                .subquery()
+            )
+            
+            # Основной запрос для получения файлов
+            result = await session.execute(
+                select(File)
+                .join(subquery, File.file_id == subquery.c.file_id)
+                .order_by(subquery.c.last_request_time.desc())
+                .limit(limit)
+            )
+            return list(result.scalars().all())

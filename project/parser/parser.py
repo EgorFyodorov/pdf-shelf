@@ -30,15 +30,24 @@ class ParsingError(ParserError):
 class Parser:
     def __init__(
         self,
-        timeout: int = 120000,
-        wait_until: str = "networkidle",
-        pdf_format: str = "A4",
+        timeout: Optional[int] = None,
+        wait_until: Optional[str] = None,
+        pdf_format: Optional[str] = None,
     ):
-        self.timeout = timeout
-        self.wait_until = wait_until
-        self.pdf_format = pdf_format
+        self.timeout = timeout if timeout is not None else 120000
+        self.wait_until = wait_until if wait_until is not None else "networkidle"
+        self.pdf_format = pdf_format if pdf_format is not None else "A4"
         self._browser: Optional[Browser] = None
         self._playwright = None
+    
+    @classmethod
+    def from_config(cls, parser_config):
+        """Создаёт Parser из конфигурации."""
+        return cls(
+            timeout=parser_config.timeout,
+            wait_until=parser_config.wait_until,
+            pdf_format=parser_config.pdf_format,
+        )
 
     async def __aenter__(self):
         await self._init_browser()
@@ -46,6 +55,10 @@ class Parser:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
+    
+    async def initialize(self):
+        """Публичный метод для инициализации браузера."""
+        await self._init_browser()
 
     async def _init_browser(self):
         if self._browser is None:
@@ -135,7 +148,8 @@ class Parser:
         except Exception as e:
             raise ParsingError(f"Unexpected error during PDF download: {str(e)}")
 
-    async def _convert_html_to_pdf(self, url: str, filepath: Path) -> None:
+    async def _convert_html_to_pdf(self, url: str, filepath: Path) -> str:
+        """Конвертирует HTML в PDF и возвращает заголовок страницы."""
         try:
             await self._init_browser()
 
@@ -143,6 +157,9 @@ class Parser:
 
             try:
                 await page.goto(url, wait_until=self.wait_until, timeout=self.timeout)
+
+                # Получаем заголовок страницы
+                page_title = await page.title()
 
                 filepath.parent.mkdir(parents=True, exist_ok=True)
 
@@ -153,6 +170,7 @@ class Parser:
                 )
 
                 logger.info(f"Page successfully converted to PDF: {filepath}")
+                return page_title or ""
             except PlaywrightTimeoutError as e:
                 raise ParsingError(f"Timeout during page load: {str(e)}")
             except Exception as e:
@@ -164,7 +182,13 @@ class Parser:
                 raise
             raise ParsingError(f"Unexpected error during conversion: {str(e)}")
 
-    async def parse(self, url: str, filepath: str | Path) -> None:
+    async def parse(self, url: str, filepath: str | Path) -> str:
+        """
+        Парсит URL и сохраняет результат в PDF файл.
+        
+        Returns:
+            Заголовок страницы (для HTML) или имя файла из URL (для PDF)
+        """
         if not self._is_valid_url(url):
             raise InvalidURLError(f"Invalid URL: {url}")
 
@@ -176,9 +200,14 @@ class Parser:
             if self._is_pdf_url(url):
                 logger.info(f"PDF file detected, downloading directly: {url}")
                 await self._download_pdf(url, filepath)
+                # Извлекаем имя файла из URL
+                parsed_url = urlparse(url)
+                filename = Path(parsed_url.path).stem
+                return filename or "Документ"
             else:
                 logger.info(f"Converting web page to PDF: {url}")
-                await self._convert_html_to_pdf(url, filepath)
+                page_title = await self._convert_html_to_pdf(url, filepath)
+                return page_title or "Документ"
         except (InvalidURLError, URLNotAccessibleError, ParsingError):
             raise
         except Exception as e:

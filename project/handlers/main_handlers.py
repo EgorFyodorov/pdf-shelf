@@ -6,15 +6,20 @@ from aiogram import Bot, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Document, FSInputFile, Message
+from aiogram.types import CallbackQuery, Document, FSInputFile, Message
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from project.api.pdf_analysis import PDFAnalysisError, analyze_pdf_path
 from project.database.file_repository import FileRepository
 from project.database.request_repository import RequestRepository
 from project.database.user_repository import UserRepository
-from project.keyboards.main_keyboards import create_tags_keyboard, main, time_selection
-from project.parser.parser import Parser, ParserError
+from project.keyboards.main_keyboards import (
+    create_pagination_keyboard,
+    create_tags_keyboard,
+    main,
+    time_selection,
+)
+from project.parser.parser import ParserError
 from project.services.material_selector import MaterialSelector
 from project.text.main_text import (
     delete_invalid_format,
@@ -40,6 +45,8 @@ from project.text.main_text import (
     pdf_processing,
     pdf_saved,
     stats_header,
+    stats_instruction,
+    stats_recent_header,
     stats_tags,
     stats_total_files,
     stats_total_sent,
@@ -48,12 +55,14 @@ from project.text.main_text import (
     url_processing,
 )
 from project.utils.formatters import (
+    clean_page_title,
     extract_tags_from_analysis,
     extract_urls,
     format_analysis_card,
     format_file_list_for_export,
     format_multiple_files_summary,
 )
+from project.utils.pagination import create_pagination_keyboard, format_files_page
 from project.utils.request_parser import is_export_request, parse_export_request
 
 logger = logging.getLogger(__name__)
@@ -66,6 +75,7 @@ class ExportStates(StatesGroup):
 
     waiting_for_time = State()  # Ожидание выбора времени (тема уже выбрана)
     viewing_export = State()  # Просмотр списка подобранных файлов
+    viewing_library = State()  # Просмотр библиотеки с пагинацией
 
 
 @router.message(Command("start"))
@@ -86,14 +96,40 @@ async def help_handler(msg: Message):
     await msg.answer(help_text)
 
 
+@router.callback_query(lambda c: c.data and (c.data.startswith("lib_page:") or c.data.startswith("exp_page:")))
+async def pagination_callback_handler(callback: CallbackQuery, sessionmaker: async_sessionmaker, state: FSMContext):
+    """Обрабатывает переключение страниц в библиотеке и экспорте."""
+    await callback.answer()
+    
+    data_parts = callback.data.split(":")
+    if len(data_parts) != 2:
+        return
+    
+    prefix, page_str = data_parts
+    try:
+        page = int(page_str)
+    except ValueError:
+        return
+    
+    user_id = callback.from_user.id
+    current_state = await state.get_state()
+    
+    if prefix == "lib_page" and current_state == ExportStates.viewing_library:
+        # Пагинация библиотеки
+        await show_library_page(callback.message, user_id, sessionmaker, state, page)
+    elif prefix == "exp_page" and current_state == ExportStates.viewing_export:
+        # Пагинация экспорта
+        await show_export_page(callback.message, user_id, sessionmaker, state, page)
+
+
 @router.message(Command("library"))
-async def library_command_handler(msg: Message, sessionmaker: async_sessionmaker):
+async def library_command_handler(msg: Message, sessionmaker: async_sessionmaker, state: FSMContext):
     sender = msg.from_user
     if sender is None:
         await msg.answer(error_sender)
         return
 
-    await show_library(msg, sender.id, sessionmaker)
+    await show_library(msg, sender.id, sessionmaker, state)
 
 
 @router.message(Command("stats"))
@@ -108,7 +144,7 @@ async def stats_command_handler(msg: Message, sessionmaker: async_sessionmaker):
 
 @router.message()
 async def pdf_handler(
-    msg: Message, sessionmaker: async_sessionmaker, state: FSMContext
+    msg: Message, sessionmaker: async_sessionmaker, state: FSMContext, config, parser
 ):
     sender = msg.from_user
     if sender is None:
@@ -120,7 +156,7 @@ async def pdf_handler(
     if msg.document:
         await handle_pdf_document(msg, sender.id, bot, sessionmaker)
     elif msg.text:
-        await handle_text_message(msg, sender.id, bot, sessionmaker, state)
+        await handle_text_message(msg, sender.id, bot, sessionmaker, state, parser)
 
 
 async def handle_pdf_document(
@@ -183,6 +219,7 @@ async def handle_text_message(
     bot: Bot,
     sessionmaker: async_sessionmaker,
     state: FSMContext,
+    parser,
 ):
     text = msg.text.strip()
     text_lower = text.lower()
@@ -192,7 +229,7 @@ async def handle_text_message(
         keyword in text_lower
         for keyword in ["библиотек", "список", "мои файлы", "мои материалы"]
     ):
-        await show_library(msg, user_id, sessionmaker)
+        await show_library(msg, user_id, sessionmaker, state)
         return
 
     if text in ["📊 Статистика"] or "статистик" in text_lower:
@@ -225,7 +262,7 @@ async def handle_text_message(
 
     # Обработка команды удаления файла
     if text.lower().startswith("удалить"):
-        await handle_file_deletion(msg, user_id, text, sessionmaker)
+        await handle_file_deletion(msg, user_id, text, bot, sessionmaker, state)
         return
 
     # Проверка, является ли сообщение числом (номер файла)
@@ -239,13 +276,13 @@ async def handle_text_message(
         return
 
     if len(urls) == 1:
-        await process_single_url(msg, urls[0], user_id, bot, sessionmaker)
+        await process_single_url(msg, urls[0], user_id, bot, sessionmaker, parser)
     else:
-        await process_multiple_urls(msg, urls, user_id, bot, sessionmaker)
+        await process_multiple_urls(msg, urls, user_id, bot, sessionmaker, parser)
 
 
 async def process_single_url(
-    msg: Message, url: str, user_id: int, bot: Bot, sessionmaker: async_sessionmaker
+    msg: Message, url: str, user_id: int, bot: Bot, sessionmaker: async_sessionmaker, parser
 ):
     file_repo = FileRepository(sessionmaker)
     
@@ -263,12 +300,13 @@ async def process_single_url(
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir) / "converted.pdf"
 
-            async with Parser() as parser:
-                await parser.parse(url, temp_path)
+            page_title = await parser.parse(url, temp_path)
 
             analysis_json = await analyze_pdf_path(str(temp_path), timeout=120.0)
 
-            title = analysis_json.get("category", {}).get("label", "Документ")
+            # Очищаем и используем заголовок страницы, если он есть, иначе label из категории
+            cleaned_title = clean_page_title(page_title)
+            title = cleaned_title if cleaned_title and cleaned_title != "Документ" else analysis_json.get("category", {}).get("label", "Документ")
             reading_time_min = analysis_json.get("volume", {}).get(
                 "reading_time_min", 0
             )
@@ -318,6 +356,7 @@ async def process_multiple_urls(
     user_id: int,
     bot: Bot,
     sessionmaker: async_sessionmaker,
+    parser,
 ):
     processing_msg = await msg.answer(url_multiple_processing.format(count=len(urls)))
 
@@ -338,12 +377,13 @@ async def process_multiple_urls(
             with tempfile.TemporaryDirectory() as temp_dir:
                 temp_path = Path(temp_dir) / "converted.pdf"
 
-                async with Parser() as parser:
-                    await parser.parse(url, temp_path)
+                page_title = await parser.parse(url, temp_path)
 
                 analysis_json = await analyze_pdf_path(str(temp_path), timeout=120.0)
 
-                title = analysis_json.get("category", {}).get("label", "Документ")
+                # Очищаем и используем заголовок страницы, если он есть, иначе label из категории
+                cleaned_title = clean_page_title(page_title)
+                title = cleaned_title if cleaned_title and cleaned_title != "Документ" else analysis_json.get("category", {}).get("label", "Документ")
                 reading_time_min = analysis_json.get("volume", {}).get(
                     "reading_time_min", 0
                 )
@@ -438,19 +478,51 @@ async def export_materials(
 
         if not selected_files:
             file_repo = FileRepository(sessionmaker)
+            request_repo = RequestRepository(sessionmaker)
             all_files = await file_repo.get_files_by_user(user_id)
 
             if not all_files:
                 await msg.answer(export_no_files, reply_markup=main)
-            elif tags:
-                await msg.answer(
-                    export_no_matches_with_tags.format(tags=", ".join(tags)),
-                    reply_markup=main,
-                )
-            else:
-                await msg.answer(export_no_matches, reply_markup=main)
+                await state.clear()
+                return
             
-            await state.clear()
+            # Получаем последние запрошенные файлы
+            recent_files = await request_repo.get_recent_requested_files(user_id, limit=5)
+            
+            if not recent_files:
+                # Если нет истории запросов, показываем сообщение об отсутствии совпадений
+                if tags:
+                    await msg.answer(
+                        export_no_matches_with_tags.format(tags=", ".join(tags)),
+                        reply_markup=main,
+                    )
+                else:
+                    await msg.answer(export_no_matches, reply_markup=main)
+                await state.clear()
+                return
+            
+            # Показываем последние запрошенные файлы
+            if tags:
+                response = f"😔 Не нашлось материалов по темам: {', '.join(tags)}\n\n"
+            else:
+                response = "😔 Не нашлось подходящих материалов\n\n"
+            
+            response += "📚 Вот ваши последние запрошенные материалы:\n\n"
+            
+            for idx, file in enumerate(recent_files, 1):
+                tags_str = ", ".join(file.tags) if file.tags else "Без тегов"
+                complexity_level = file.analysis_json.get("complexity", {}).get("level", "средняя")
+                
+                response += f"{idx}. 📄 {file.title}\n"
+                response += f"   ⏱ {float(file.reading_time_min):.0f} мин • 📊 {complexity_level} • 🏷 {tags_str}\n\n"
+            
+            response += "\n" + library_instruction
+            
+            # Сохраняем список файлов в state
+            await state.update_data(selected_files=[f.file_id for f in recent_files])
+            await state.set_state(ExportStates.viewing_export)
+            
+            await msg.answer(response, disable_web_page_preview=True, reply_markup=main)
             return
 
         # Формируем сообщение со списком подобранных файлов
@@ -558,7 +630,7 @@ async def handle_time_selection(
 
 
 async def handle_file_deletion(
-    msg: Message, user_id: int, text: str, sessionmaker: async_sessionmaker
+    msg: Message, user_id: int, text: str, bot: Bot, sessionmaker: async_sessionmaker, state: FSMContext
 ):
     """Обрабатывает команду удаления файла."""
     try:
@@ -571,29 +643,118 @@ async def handle_file_deletion(
         file_number = int(parts[1])
 
         file_repo = FileRepository(sessionmaker)
-        files = await file_repo.get_files_by_user(user_id)
-
-        if not files:
-            await msg.answer(library_empty)
-            return
-
-        if file_number < 1 or file_number > len(files):
-            await msg.answer(f"❌ Неверный номер. Введите число от 1 до {len(files)}")
-            return
-
-        # Получаем файл по индексу (file_number - 1)
-        file = files[file_number - 1]
-
-        # Удаляем файл
-        deleted = await file_repo.delete_file(file.file_id)
-
-        if deleted:
-            await msg.answer(file_deleted)
-            logger.info(
-                f"User {user_id} deleted file {file.file_id} (number {file_number})"
-            )
+        
+        # Проверяем, находимся ли мы в режиме просмотра экспорта
+        current_state = await state.get_state()
+        if current_state == ExportStates.viewing_export:
+            # Получаем файлы из state (подобранные для экспорта)
+            data = await state.get_data()
+            selected_file_ids = data.get("selected_files", [])
+            
+            if not selected_file_ids:
+                await msg.answer(library_empty)
+                await state.clear()
+                return
+            
+            if file_number < 1 or file_number > len(selected_file_ids):
+                await msg.answer(f"❌ Неверный номер. Введите число от 1 до {len(selected_file_ids)}")
+                return
+            
+            # Получаем ID файла для удаления
+            file_id = selected_file_ids[file_number - 1]
+            file = await file_repo.get_file(file_id)
+            
+            if not file:
+                await msg.answer(file_not_found)
+                return
+            
+            # Удаляем файл из БД
+            deleted = await file_repo.delete_file(file.file_id)
+            
+            if deleted:
+                # Обновляем список файлов в state
+                selected_file_ids.pop(file_number - 1)
+                
+                await msg.answer(file_deleted)
+                logger.info(
+                    f"User {user_id} deleted file {file.file_id} from export view (number {file_number})"
+                )
+                
+                if selected_file_ids:
+                    # Если файлы еще остались, обновляем state и показываем обновленный список
+                    await state.update_data(selected_files=selected_file_ids)
+                    # Получаем текущую страницу
+                    current_page = data.get("current_page", 0)
+                    # Показываем обновленный список
+                    await send_export_list(msg.chat.id, user_id, sessionmaker, state, current_page, bot)
+                else:
+                    # Если файлов не осталось, очищаем state
+                    await state.clear()
+                    await msg.answer(export_no_files, reply_markup=main)
+            else:
+                await msg.answer(file_not_found)
+        elif current_state == ExportStates.viewing_library:
+            # Режим просмотра библиотеки с пагинацией
+            data = await state.get_data()
+            all_file_ids = data.get("all_file_ids", [])
+            
+            if not all_file_ids:
+                await msg.answer(library_empty)
+                await state.clear()
+                return
+            
+            # Проверяем номер
+            if file_number < 1 or file_number > len(all_file_ids):
+                await msg.answer(f"❌ Неверный номер. Введите число от 1 до {len(all_file_ids)}")
+                return
+            
+            # Получаем ID файла для удаления (номер относительно всего списка, не страницы)
+            file_id = all_file_ids[file_number - 1]
+            file = await file_repo.get_file(file_id)
+            
+            if not file:
+                await msg.answer(file_not_found)
+                return
+            
+            # Удаляем файл из БД
+            deleted = await file_repo.delete_file(file.file_id)
+            
+            if deleted:
+                await msg.answer(file_deleted)
+                logger.info(
+                    f"User {user_id} deleted file {file.file_id} from library (number {file_number})"
+                )
+                
+                # Получаем текущую страницу и показываем обновленный список
+                current_page = data.get("current_page", 0)
+                await send_library_list(msg.chat.id, user_id, sessionmaker, state, current_page, bot)
+            else:
+                await msg.answer(file_not_found)
         else:
-            await msg.answer(file_not_found)
+            # Обычный режим - удаляем из всей библиотеки (без пагинации/state)
+            files = await file_repo.get_files_by_user(user_id)
+
+            if not files:
+                await msg.answer(library_empty)
+                return
+
+            if file_number < 1 or file_number > len(files):
+                await msg.answer(f"❌ Неверный номер. Введите число от 1 до {len(files)}")
+                return
+
+            # Получаем файл по индексу (file_number - 1)
+            file = files[file_number - 1]
+
+            # Удаляем файл
+            deleted = await file_repo.delete_file(file.file_id)
+
+            if deleted:
+                await msg.answer(file_deleted)
+                logger.info(
+                    f"User {user_id} deleted file {file.file_id} (number {file_number})"
+                )
+            else:
+                await msg.answer(file_not_found)
 
     except Exception as e:
         logger.error(f"Error deleting file for user {user_id}: {e}", exc_info=True)
@@ -639,6 +800,31 @@ async def handle_file_number(
             # Сохраняем запрос в базе
             request_repo = RequestRepository(sessionmaker)
             await request_repo.create_request(user_id, file.file_id)
+        elif current_state == ExportStates.viewing_library:
+            # Режим просмотра библиотеки с пагинацией
+            data = await state.get_data()
+            all_file_ids = data.get("all_file_ids", [])
+            
+            if not all_file_ids:
+                await msg.answer(library_empty)
+                await state.clear()
+                return
+            
+            if file_number < 1 or file_number > len(all_file_ids):
+                await msg.answer(f"❌ Неверный номер. Введите число от 1 до {len(all_file_ids)}")
+                return
+            
+            # Получаем файл по ID (номер относительно всего списка)
+            file_id = all_file_ids[file_number - 1]
+            file = await file_repo.get_file(file_id)
+            
+            if not file:
+                await msg.answer(file_not_found)
+                return
+            
+            # Сохраняем запрос в базе
+            request_repo = RequestRepository(sessionmaker)
+            await request_repo.create_request(user_id, file.file_id)
         else:
             # Обычный режим - показываем файлы из всей библиотеки
             files = await file_repo.get_files_by_user(user_id)
@@ -653,6 +839,10 @@ async def handle_file_number(
 
             # Получаем файл по индексу (file_number - 1)
             file = files[file_number - 1]
+            
+            # Сохраняем запрос в базе
+            request_repo = RequestRepository(sessionmaker)
+            await request_repo.create_request(user_id, file.file_id)
 
         # Отправляем PDF файл
         await bot.send_document(
@@ -668,56 +858,159 @@ async def handle_file_number(
         await msg.answer(f"❌ Ошибка при отправке файла: {str(e)}")
 
 
-async def show_library(msg: Message, user_id: int, sessionmaker: async_sessionmaker):
-    """Показывает список файлов в библиотеке пользователя."""
+async def send_library_list(chat_id: int, user_id: int, sessionmaker: async_sessionmaker, state: FSMContext, page: int = 0, bot=None):
+    """Отправляет новое сообщение со списком библиотеки."""
     file_repo = FileRepository(sessionmaker)
     files = await file_repo.get_files_by_user(user_id)
-
+    
     if not files:
-        await msg.answer(library_empty)
+        await bot.send_message(chat_id, library_empty)
+        await state.clear()
         return
-
+    
     total_time = sum(float(f.reading_time_min) for f in files)
-
-    response = library_header.format(count=len(files), total_time=total_time)
-    response += "\n"
-
-    # Собираем список файлов
-    for idx, file in enumerate(files, 1):
-        tags_str = ", ".join(file.tags) if file.tags else "Без тегов"
-        complexity_level = file.analysis_json.get("complexity", {}).get("level", "средняя")
-        
-        response += f"{idx}. 📄 {file.title}\n"
-        response += f"   ⏱ {float(file.reading_time_min):.0f} мин • 📊 {complexity_level} • 🏷 {tags_str}\n"
-
-        if file.source_url:
-            url_display = (
-                file.source_url[:50] + "..."
-                if len(file.source_url) > 50
-                else file.source_url
-            )
-            response += f"   🔗 {url_display}\n"
-
-        response += "\n"
-
-        # Если сообщение становится слишком длинным, отправляем его частями
-        if len(response) > 3500:
-            await msg.answer(response, disable_web_page_preview=True)
-            response = ""
-
-    # Добавляем инструкцию и доступные теги в конец
+    header = library_header.format(count=len(files), total_time=total_time) + "\n"
+    
+    # Форматируем страницу
+    response, total_pages = format_files_page(files, page, page_size=10, header=header)
+    
+    # Добавляем инструкцию и теги
     response += "\n" + library_instruction + "\n"
-
+    
     selector = MaterialSelector(sessionmaker)
     available_tags = await selector.get_available_tags(user_id)
-
+    
     if available_tags:
         response += library_tags_header.format(tags=", ".join(available_tags))
+    
+    # Создаем кнопки пагинации
+    pagination_kb = create_pagination_keyboard(page, total_pages, prefix="lib_page")
+    
+    # Сохраняем все ID файлов и текущую страницу в state
+    await state.update_data(all_file_ids=[f.file_id for f in files], current_page=page)
+    await state.set_state(ExportStates.viewing_library)
+    
+    await bot.send_message(chat_id, response, disable_web_page_preview=True, reply_markup=pagination_kb)
 
-    # Отправляем финальное сообщение
-    await msg.answer(response, disable_web_page_preview=True)
 
-    logger.info(f"Showed library for user {user_id}: {len(files)} files")
+async def send_export_list(chat_id: int, user_id: int, sessionmaker: async_sessionmaker, state: FSMContext, page: int = 0, bot=None):
+    """Отправляет новое сообщение со списком подобранных материалов."""
+    data = await state.get_data()
+    selected_file_ids = data.get("selected_files", [])
+    
+    if not selected_file_ids:
+        await bot.send_message(chat_id, export_no_files, reply_markup=main)
+        await state.clear()
+        return
+    
+    # Получаем файлы по ID
+    file_repo = FileRepository(sessionmaker)
+    files = []
+    for file_id in selected_file_ids:
+        file = await file_repo.get_file(file_id)
+        if file:
+            files.append(file)
+    
+    total_time = sum(float(f.reading_time_min) for f in files)
+    header = export_header.format(count=len(files), total_time=total_time) + "\n"
+    
+    # Форматируем страницу
+    response, total_pages = format_files_page(files, page, page_size=10, header=header)
+    
+    response += "\n" + library_instruction
+    
+    # Создаем кнопки пагинации
+    pagination_kb = create_pagination_keyboard(page, total_pages, prefix="exp_page")
+    
+    # Обновляем страницу в state
+    await state.update_data(current_page=page)
+    
+    await bot.send_message(chat_id, response, disable_web_page_preview=True, reply_markup=pagination_kb)
+
+
+async def show_library_page(msg: Message, user_id: int, sessionmaker: async_sessionmaker, state: FSMContext, page: int = 0):
+    """Показывает страницу библиотеки с пагинацией (редактирует существующее сообщение)."""
+    file_repo = FileRepository(sessionmaker)
+    files = await file_repo.get_files_by_user(user_id)
+    
+    if not files:
+        await msg.edit_text(library_empty)
+        await state.clear()
+        return
+    
+    total_time = sum(float(f.reading_time_min) for f in files)
+    header = library_header.format(count=len(files), total_time=total_time) + "\n"
+    
+    # Форматируем страницу
+    response, total_pages = format_files_page(files, page, page_size=10, header=header)
+    
+    # Добавляем инструкцию и теги
+    response += "\n" + library_instruction + "\n"
+    
+    selector = MaterialSelector(sessionmaker)
+    available_tags = await selector.get_available_tags(user_id)
+    
+    if available_tags:
+        response += library_tags_header.format(tags=", ".join(available_tags))
+    
+    # Создаем кнопки пагинации
+    pagination_kb = create_pagination_keyboard(page, total_pages, prefix="lib_page")
+    
+    # Сохраняем все ID файлов и текущую страницу в state
+    await state.update_data(all_file_ids=[f.file_id for f in files], current_page=page)
+    await state.set_state(ExportStates.viewing_library)
+    
+    try:
+        await msg.edit_text(response, disable_web_page_preview=True, reply_markup=pagination_kb)
+    except:
+        # Если не удалось отредактировать, отправляем новое сообщение
+        await msg.answer(response, disable_web_page_preview=True, reply_markup=pagination_kb)
+
+
+async def show_export_page(msg: Message, user_id: int, sessionmaker: async_sessionmaker, state: FSMContext, page: int = 0):
+    """Показывает страницу подобранных материалов с пагинацией."""
+    data = await state.get_data()
+    selected_file_ids = data.get("selected_files", [])
+    
+    if not selected_file_ids:
+        await msg.edit_text(export_no_files)
+        await state.clear()
+        return
+    
+    # Получаем файлы по ID
+    file_repo = FileRepository(sessionmaker)
+    files = []
+    for file_id in selected_file_ids:
+        file = await file_repo.get_file(file_id)
+        if file:
+            files.append(file)
+    
+    total_time = sum(float(f.reading_time_min) for f in files)
+    header = export_header.format(count=len(files), total_time=total_time) + "\n"
+    
+    # Форматируем страницу
+    response, total_pages = format_files_page(files, page, page_size=10, header=header)
+    
+    response += "\n" + library_instruction
+    
+    # Создаем кнопки пагинации
+    pagination_kb = create_pagination_keyboard(page, total_pages, prefix="exp_page")
+    
+    # Обновляем страницу в state
+    await state.update_data(current_page=page)
+    
+    try:
+        await msg.edit_text(response, disable_web_page_preview=True, reply_markup=pagination_kb)
+    except:
+        # Если не удалось отредактировать, отправляем новое сообщение
+        await msg.answer(response, disable_web_page_preview=True, reply_markup=pagination_kb)
+
+
+async def show_library(msg: Message, user_id: int, sessionmaker: async_sessionmaker, state: FSMContext):
+    """Показывает список файлов в библиотеке пользователя с пагинацией."""
+    bot = msg.bot
+    await send_library_list(msg.chat.id, user_id, sessionmaker, state, page=0, bot=bot)
+    logger.info(f"Showed library for user {user_id}")
 
 
 async def show_stats(msg: Message, user_id: int, sessionmaker: async_sessionmaker):
@@ -749,6 +1042,25 @@ async def show_stats(msg: Message, user_id: int, sessionmaker: async_sessionmake
 
     if all_tags:
         response += f"\n🏷 Темы: {', '.join(sorted(all_tags))}"
+
+    # Получаем последние запрошенные файлы
+    recent_files = await request_repo.get_recent_requested_files(user_id, limit=5)
+    
+    if recent_files:
+        response += stats_recent_header + "\n"
+        for idx, file in enumerate(recent_files, 1):
+            tags_str = ", ".join(file.tags[:2]) if file.tags else "Без тегов"
+            if file.tags and len(file.tags) > 2:
+                tags_str += f" +{len(file.tags) - 2}"
+            
+            title = file.title
+            if len(title) > 50:
+                title = title[:47] + "..."
+            
+            response += f"\n{idx}. 📄 {title}"
+            response += f"\n   ⏱ {float(file.reading_time_min):.0f} мин • 🏷 {tags_str}"
+        
+        response += stats_instruction
 
     await msg.answer(response)
 

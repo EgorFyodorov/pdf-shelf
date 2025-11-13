@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS files (
 CREATE TABLE IF NOT EXISTS requests (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id INTEGER NOT NULL REFERENCES users(user_id),
-    file_id UUID NOT NULL REFERENCES files(file_id) ON DELETE CASCADE
+    file_id UUID NOT NULL REFERENCES files(file_id) ON DELETE CASCADE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_files_user_id ON files(user_id);
@@ -27,3 +28,4 @@ CREATE INDEX IF NOT EXISTS idx_files_tags ON files USING GIN(tags);
 CREATE INDEX IF NOT EXISTS idx_files_analysis_json ON files USING GIN(analysis_json);
 CREATE INDEX IF NOT EXISTS idx_requests_user_id ON requests(user_id);
 CREATE INDEX IF NOT EXISTS idx_requests_file_id ON requests(file_id);
+CREATE INDEX IF NOT EXISTS idx_requests_created_at ON requests(created_at);

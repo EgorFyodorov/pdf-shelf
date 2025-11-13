@@ -58,6 +58,9 @@ class Request(Base):
     file_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("files.file_id"), nullable=False
     )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
 
     # Relationships
     user: Mapped["User"] = relationship("User", back_populates="requests")

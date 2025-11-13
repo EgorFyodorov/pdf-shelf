@@ -1,4 +1,9 @@
-from aiogram.types import InlineKeyboardButton, KeyboardButton, ReplyKeyboardMarkup
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+)
 
 menu = [[InlineKeyboardButton(text="Мой аккаунт", callback_data="account")]]
 
@@ -52,3 +57,47 @@ def create_tags_keyboard(tags: list[str]) -> ReplyKeyboardMarkup:
         one_time_keyboard=True,
         input_field_placeholder="Выберите тему...",
     )
+
+
+def create_pagination_keyboard(
+    page: int, total_pages: int, prefix: str = "page"
+) -> InlineKeyboardMarkup:
+    """
+    Создает inline клавиатуру с кнопками пагинации.
+    
+    Args:
+        page: Текущая страница (начинается с 0)
+        total_pages: Общее количество страниц
+        prefix: Префикс для callback_data
+    
+    Returns:
+        InlineKeyboardMarkup с кнопками навигации
+    """
+    buttons = []
+    
+    if total_pages <= 1:
+        return None
+    
+    # Кнопки навигации
+    nav_buttons = []
+    
+    if page > 0:
+        nav_buttons.append(
+            InlineKeyboardButton(text="◀️ Назад", callback_data=f"{prefix}:{page-1}")
+        )
+    
+    # Показываем текущую страницу
+    nav_buttons.append(
+        InlineKeyboardButton(
+            text=f"· {page + 1}/{total_pages} ·", callback_data="noop"
+        )
+    )
+    
+    if page < total_pages - 1:
+        nav_buttons.append(
+            InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"{prefix}:{page+1}")
+        )
+    
+    buttons.append(nav_buttons)
+    
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
