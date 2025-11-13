@@ -63,7 +63,11 @@ from project.utils.formatters import (
     format_multiple_files_summary,
 )
 from project.utils.pagination import create_pagination_keyboard, format_files_page
-from project.utils.request_parser import is_export_request, parse_export_request
+from project.utils.request_parser import (
+    is_export_request,
+    parse_export_request,
+    parse_time_from_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -261,6 +265,19 @@ async def handle_text_message(
     if text in ["15 минут", "30 минут", "1 час", "2 часа"]:
         await handle_time_selection(msg, user_id, bot, sessionmaker, text, state)
         return
+    
+    # Если пользователь в состоянии ожидания времени, пробуем распарсить произвольное время
+    current_state = await state.get_state()
+    if current_state == ExportStates.waiting_for_time:
+        # Пробуем распарсить время из текста
+        time_minutes = parse_time_from_text(text)
+        
+        if time_minutes:
+            await handle_time_selection(msg, user_id, bot, sessionmaker, text, state)
+            return
+        else:
+            await msg.answer("⚠️ Не могу понять указанное время. Попробуйте:\n• 10 минут\n• 40 минут\n• 1 час\nИли выберите из предложенных вариантов.")
+            return
 
     # Обработка текстовых запросов на выгрузку
     if is_export_request(text):
