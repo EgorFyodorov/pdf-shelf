@@ -313,9 +313,3 @@ pdf-shelf/
 ├── Makefile                      # Make команды
 └── requirements.txt              # Python зависимости
 ```
-
----
-
-## Лицензия
-
-MIT License
