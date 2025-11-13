@@ -26,6 +26,95 @@ from .schema import (
 logger = logging.getLogger(__name__)
 
 
+async def _call_llm_for_complexity(
+    text: str,
+    theme: dict[str, Any],
+    category: dict[str, Any],
+    meta: dict[str, Any],
+    max_retries: int = 3,
+) -> Optional[dict[str, Any]]:
+    """Дополнительный запрос к LLM для определения complexity."""
+    router = get_llm_router()
+    
+    # Формируем промпт для определения сложности
+    sys_prompt = (
+        "PDF-MCP: определение сложности текста. "
+        "Верни ТОЛЬКО валидный JSON объект с полями: score (integer 1-100), level (string), "
+        "estimated_grade (string), drivers (array of strings), notes (string)."
+    )
+    
+    theme_info = f"Тема: {theme.get('label', 'неизвестно')}"
+    category_info = f"Категория: {category.get('label', 'неизвестно')}"
+    keywords_info = f"Ключевые слова: {', '.join((theme.get('keywords', []) + category.get('keywords', []))[:10])}"
+    
+    user_prompt = f"""Определи сложность следующего текста на основе его темы и категории.
+
+{theme_info}
+{category_info}
+{keywords_info}
+
+Текст (первые 2000 символов):
+{text[:2000]}
+
+Верни JSON объект complexity с полями:
+- score: integer от 1 до 100 (1 - очень простая, 100 - очень сложная)
+- level: string ("очень низкая", "низкая", "средняя", "высокая", "очень высокая")
+- estimated_grade: string (например, "10", "11-12", "16+")
+- drivers: array of strings (факторы сложности)
+- notes: string (краткое объяснение)
+"""
+    
+    try:
+        content, provider_name = await router.generate_content(
+            prompt=user_prompt,
+            system_prompt=sys_prompt,
+            max_retries=max_retries,
+        )
+        logger.info(f"Complexity LLM response from {provider_name}")
+        
+        # Парсим JSON
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            # Пробуем извлечь JSON из markdown
+            import re
+            json_match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", content, re.MULTILINE)
+            if json_match:
+                data = json.loads(json_match.group(1))
+            else:
+                # Пробуем найти первый JSON объект
+                start_idx = content.find('{')
+                if start_idx != -1:
+                    brace_count = 0
+                    end_idx = start_idx
+                    for i in range(start_idx, len(content)):
+                        if content[i] == '{':
+                            brace_count += 1
+                        elif content[i] == '}':
+                            brace_count -= 1
+                            if brace_count == 0:
+                                end_idx = i + 1
+                                break
+                    if end_idx > start_idx:
+                        data = json.loads(content[start_idx:end_idx])
+                    else:
+                        return None
+                else:
+                    return None
+        
+        # Извлекаем complexity из ответа
+        if isinstance(data, dict):
+            complexity = data.get("complexity") or data
+            if isinstance(complexity, dict):
+                return complexity
+        
+        return None
+        
+    except Exception as e:
+        logger.warning(f"Failed to get complexity from LLM: {e}")
+        return None
+
+
 def _normalize_llm_response(
     data: dict[str, Any], meta: dict[str, Any], text: str
 ) -> dict[str, Any]:
@@ -174,15 +263,22 @@ def _normalize_llm_response(
             if isinstance(complexity_raw, dict) and key in complexity_raw:
                 value = complexity_raw[key]
                 # Преобразуем score если это float в диапазоне 0-1
-                if eng_key == "score" and isinstance(value, (float, int)):
-                    if 0 <= value <= 1:
-                        # Преобразуем в шкалу 1-100
-                        complexity[eng_key] = int(value * 100)
-                    elif isinstance(value, int) and 1 <= value <= 5:
-                        # Преобразуем из шкалы 1-5 в 1-100
-                        complexity[eng_key] = int((value / 5) * 100)
+                if eng_key == "score":
+                    if value is None:
+                        # Пропускаем None, будет установлено дефолтное значение позже
+                        continue
+                    elif isinstance(value, (float, int)):
+                        if 0 <= value <= 1:
+                            # Преобразуем в шкалу 1-100
+                            complexity[eng_key] = int(value * 100)
+                        elif isinstance(value, int) and 1 <= value <= 5:
+                            # Преобразуем из шкалы 1-5 в 1-100
+                            complexity[eng_key] = int((value / 5) * 100)
+                        else:
+                            complexity[eng_key] = int(value)
                     else:
-                        complexity[eng_key] = int(value)
+                        # Если значение не число, пропускаем
+                        continue
                 elif eng_key == "estimated_grade":
                     # estimated_grade должен быть строкой
                     if isinstance(value, (int, float)):
@@ -209,15 +305,33 @@ def _normalize_llm_response(
                 break
 
     # Заполняем недостающие поля complexity
-    if "score" not in complexity:
-        complexity["score"] = 40  # средняя по умолчанию
-    if "level" not in complexity:
-        complexity["level"] = "средняя"
-    if "estimated_grade" not in complexity:
-        complexity["estimated_grade"] = "школьный"
+    # Проверяем, есть ли null значения в complexity
+    has_null_complexity = (
+        ("score" not in complexity or complexity["score"] is None) or
+        ("level" not in complexity or complexity["level"] is None or complexity["level"] == "") or
+        ("estimated_grade" not in complexity or complexity["estimated_grade"] is None or complexity["estimated_grade"] == "")
+    )
+    
+    # Устанавливаем дефолтные значения, если есть null
+    # Помечаем флагом, что это дефолтные значения (для последующей проверки в _call_llm)
+    default_values_set = False
+    if has_null_complexity:
+        if "score" not in complexity or complexity["score"] is None:
+            complexity["score"] = 40  # средняя по умолчанию
+            default_values_set = True
+        if "level" not in complexity or complexity["level"] is None or complexity["level"] == "":
+            complexity["level"] = "средняя"
+            default_values_set = True
+        if "estimated_grade" not in complexity or complexity["estimated_grade"] is None or complexity["estimated_grade"] == "":
+            complexity["estimated_grade"] = "школьный"
+            default_values_set = True
     else:
         if not isinstance(complexity["estimated_grade"], str):
             complexity["estimated_grade"] = str(complexity["estimated_grade"])
+    
+    # Помечаем, что были установлены дефолтные значения
+    if default_values_set:
+        result["__complexity_used_defaults"] = True
     if "drivers" not in complexity:
         complexity["drivers"] = []
     if "notes" not in complexity:
@@ -362,41 +476,46 @@ def _normalize_llm_response(
     return result
 
 
-# --- GigaChat integration ---------------------------------------------------
-from .gigachat_client import get_gigachat_client
+# --- LLM Router integration (Gemini → GigaChat → Perplexity) ------------
+from .llm_router import get_llm_router
 
 
-async def _call_gigachat(
+async def _call_llm(
     text: str, meta: dict[str, Any], max_retries: int = 5
 ) -> dict[str, Any]:
-    """Вызов GigaChat для анализа текста."""
-    client = get_gigachat_client()
+    """Вызов LLM через роутер с fallback между провайдерами."""
+    router = get_llm_router()
+    
+    # Счетчик попыток определения complexity (максимум 2)
+    complexity_attempts = meta.get("__complexity_attempts", 0)
+    max_complexity_attempts = 2
 
     # Build prompt
     sys_prompt = PDF_MCP_SYSTEM_PROMPT
     user_prompt = build_user_prompt(text, meta)
 
-    # Генерируем контент через GigaChat API (retry логика уже внутри клиента)
+    # Генерируем контент через роутер (fallback уже внутри)
     try:
-        content = await client.generate_content(
+        content, provider_name = await router.generate_content(
             prompt=user_prompt,
             system_prompt=sys_prompt,
             max_retries=max_retries,
         )
+        logger.info(f"LLM response from {provider_name}")
     except Exception as e:
-        logger.warning("GigaChat analysis failed: %s", e)
-        raise RuntimeError(f"GigaChat API error: {e}") from e
+        logger.warning(f"LLM analysis failed (all providers): {e}")
+        raise RuntimeError(f"LLM API error: {e}") from e
 
     # Парсим JSON
     data = None
     try:
         data = json.loads(content)
     except json.JSONDecodeError as e:
-        logger.warning("GigaChat returned non-JSON, attempting to fix: %s", e)
+        logger.warning("LLM returned non-JSON, attempting to fix: %s", e)
         logger.info("Content received (first 1000 chars): %s", content[:1000])
         
         import re
-        
+
         # Пробуем найти JSON в markdown code block
         json_match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", content, re.MULTILINE)
         if json_match:
@@ -458,17 +577,17 @@ async def _call_gigachat(
             except json.JSONDecodeError as parse_err:
                 logger.error("Failed to parse JSON even after cleaning: %s", parse_err)
                 logger.debug("Cleaned content: %s", cleaned[:1000])
-                raise RuntimeError(f"Failed to parse JSON from GigaChat response. Error: {e}. Content preview: {content[:500]}")
+                raise RuntimeError(f"Failed to parse JSON from LLM response. Error: {e}. Content preview: {content[:500]}")
     
     # Проверяем, что data не None
     if data is None:
-        logger.error("Failed to parse JSON from GigaChat response")
-        raise RuntimeError(f"Failed to parse JSON from GigaChat response. Content preview: {content[:500]}")
+        logger.error("Failed to parse JSON from LLM response")
+        raise RuntimeError(f"Failed to parse JSON from LLM response. Content preview: {content[:500]}")
 
     # Проверяем, что data - это dict, а не строка или другой тип
     if not isinstance(data, dict):
-        logger.error("GigaChat returned non-dict data: %s (type: %s)", data, type(data))
-        raise RuntimeError(f"Expected dict from GigaChat, got {type(data).__name__}: {str(data)[:200]}")
+        logger.error("LLM returned non-dict data: %s (type: %s)", data, type(data))
+        raise RuntimeError(f"Expected dict from LLM, got {type(data).__name__}: {str(data)[:200]}")
 
     # Нормализуем ответ LLM перед валидацией
     normalized_data = None
@@ -476,6 +595,82 @@ async def _call_gigachat(
 
     try:
         normalized_data = _normalize_llm_response(data, meta, text)
+        
+        # Проверяем, есть ли null значения в complexity после нормализации
+        # Или были ли установлены дефолтные значения (что означает, что LLM не вернул complexity)
+        complexity = normalized_data.get("complexity", {})
+        has_null_complexity = (
+            complexity.get("score") is None
+            or not complexity.get("level")
+            or not complexity.get("estimated_grade")
+        )
+        
+        # Также проверяем, были ли установлены дефолтные значения
+        # (score=40, level="средняя", estimated_grade="школьный" без drivers и notes)
+        has_default_complexity = (
+            normalized_data.get("__complexity_used_defaults", False)
+            or (
+                complexity.get("score") == 40
+                and complexity.get("level") == "средняя"
+                and complexity.get("estimated_grade") == "школьный"
+                and not complexity.get("drivers")
+                and not complexity.get("notes")
+            )
+        )
+        
+        # Если complexity содержит null или были установлены дефолтные значения,
+        # пытаемся получить его через дополнительный запрос
+        # Но не более max_complexity_attempts раз
+        if (has_null_complexity or has_default_complexity) and complexity_attempts < max_complexity_attempts:
+            reason = "null values" if has_null_complexity else "default values were set"
+            logger.info(
+                f"Complexity contains {reason}, making additional LLM request to determine complexity "
+                f"(попытка {complexity_attempts + 1}/{max_complexity_attempts})"
+            )
+            
+            # Извлекаем theme и category (используем нормализованную category, если доступна)
+            theme_raw = data.get("theme") or {}
+            # Используем нормализованную category из result, если она уже обработана
+            category_for_complexity = normalized_data.get("category") or data.get("category") or {}
+            
+            # Увеличиваем счетчик попыток
+            meta["__complexity_attempts"] = complexity_attempts + 1
+            
+            # Пробуем получить complexity через LLM
+            llm_complexity = await _call_llm_for_complexity(
+                text, theme_raw, category_for_complexity, meta, max_retries=2
+            )
+            
+            if llm_complexity:
+                # Обновляем complexity из LLM ответа
+                # Заменяем дефолтные значения на значения из LLM
+                if llm_complexity.get("score"):
+                    complexity["score"] = llm_complexity["score"]
+                if llm_complexity.get("level"):
+                    complexity["level"] = llm_complexity["level"]
+                if llm_complexity.get("estimated_grade"):
+                    complexity["estimated_grade"] = llm_complexity["estimated_grade"]
+                if llm_complexity.get("drivers"):
+                    complexity["drivers"] = llm_complexity["drivers"]
+                if llm_complexity.get("notes"):
+                    complexity["notes"] = llm_complexity["notes"]
+                
+                normalized_data["complexity"] = complexity
+                # Убираем флаг дефолтных значений, так как теперь у нас есть реальные значения от LLM
+                normalized_data.pop("__complexity_used_defaults", None)
+                logger.info("Complexity updated from additional LLM call")
+            else:
+                logger.warning(
+                    f"Failed to get complexity from LLM (попытка {complexity_attempts}/{max_complexity_attempts}), "
+                    f"using defaults"
+                )
+        elif (has_null_complexity or has_default_complexity) and complexity_attempts >= max_complexity_attempts:
+            reason = "null values" if has_null_complexity else "default values"
+            logger.warning(
+                f"Complexity contains {reason}, but max attempts ({max_complexity_attempts}) reached. "
+                f"Using default values."
+            )
+        
         validate(instance=normalized_data, schema=ANALYSIS_JSON_SCHEMA)
         return normalized_data
     except Exception as e:
@@ -502,39 +697,39 @@ async def _call_gigachat(
             raise validation_error
 
 
-async def _call_gigachat_category(
+async def _call_llm_category(
     text: str,
     meta: dict[str, Any],
     existing_categories: list[dict] | None,
     max_retries: int = 5,
 ) -> dict[str, Any]:
-    """Вызов GigaChat для категоризации документа."""
-    client = get_gigachat_client()
+    """Вызов LLM через роутер для категоризации документа."""
+    router = get_llm_router()
 
     sys_prompt = "PDF-MCP: категоризация документов (классифицировать в существующую или создать новую категорию). Возвращай строго валидный JSON."
     user_prompt = build_category_prompt(text, meta, existing_categories or [])
 
-    # Генерируем контент через GigaChat API (retry логика уже внутри клиента)
     try:
-        content = await client.generate_content(
+        content, provider_name = await router.generate_content(
             prompt=user_prompt,
             system_prompt=sys_prompt,
             max_retries=max_retries,
         )
+        logger.info(f"LLM category response from {provider_name}")
     except Exception as e:
-        logger.warning("GigaChat category decision failed: %s", e)
-        raise RuntimeError(f"GigaChat API error: {e}") from e
+        logger.warning(f"LLM category decision failed (all providers): {e}")
+        raise RuntimeError(f"LLM API error: {e}") from e
 
     # Проверяем, что контент не пустой
     if not content or content.strip() == "" or content.strip() == "{}":
-        logger.warning("GigaChat returned empty content for category decision")
-        raise RuntimeError("Empty response from GigaChat")
+        logger.warning(f"LLM returned empty content for category decision")
+        raise RuntimeError("Empty response from LLM")
 
     # Пробуем распарсить JSON
     try:
         data = json.loads(content)
     except json.JSONDecodeError as e:
-        logger.warning("GigaChat returned non-JSON for category decision: %s", e)
+        logger.warning("LLM returned non-JSON for category decision: %s", e)
         logger.debug(
             "Content received: %s", content[:500]
         )  # Первые 500 символов для отладки
@@ -744,7 +939,7 @@ async def analyze_text_tool(
         return _fallback_simple_analysis(text, meta)
 
     try:
-        data = await _call_gigachat(text, llm_meta)
+        data = await _call_llm(text, llm_meta)
         try:
             breakdown = meta.get("__reading_time_breakdown") or {}
             words = int(
@@ -792,7 +987,7 @@ async def analyze_text_tool(
             logger.debug("Postprocess reading time failed: %s", e)
         return data
     except Exception as e:
-        logger.warning("GigaChat analysis failed, falling back. Error: %s", e)
+        logger.warning("LLM analysis failed, falling back. Error: %s", e)
         return _fallback_simple_analysis(text, meta)
 
 
@@ -817,9 +1012,9 @@ async def classify_or_create_category_tool(
     meta = meta or {}
     llm_meta = {k: v for k, v in meta.items() if not str(k).startswith("__")}
     try:
-        return await _call_gigachat_category(text, llm_meta, existing_categories or [])
+        return await _call_llm_category(text, llm_meta, existing_categories or [])
     except Exception as e:
-        logger.warning("GigaChat category decision failed: %s", e)
+        logger.warning("LLM category decision failed: %s", e)
         # Фолбэк без LLM — нейтральная заглушка
         return {
             "decision": "created_new",

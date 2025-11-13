@@ -10,8 +10,10 @@
 
 **1. MCP-сервер (для тестирования через MCP-клиент):**
 ```bash
-export GIGACHAT_AUTH_KEY="ваш_authorization_key"  # Base64 encoded authorization key
-export GIGACHAT_MODEL="GigaChat-2"  # опционально, по умолчанию GigaChat-2
+# Установите хотя бы один API ключ (Gemini, GigaChat или Perplexity)
+export GEMINI_API_KEY="ваш_ключ"  # опционально
+export GIGACHAT_AUTH_KEY="ваш_authorization_key"  # опционально
+export PERPLEXITYAI_API_KEY="ваш_ключ"  # опционально (или PERPLEXITY_API_KEY для совместимости)
 python -m project.mcp_pdf.server
 ```
 
@@ -25,19 +27,50 @@ result = await analyze_pdf_path("/path/to/file.pdf")
 
 **3. CLI-тестирование (прогон PDF из папки):**
 ```bash
-export GIGACHAT_AUTH_KEY="ваш_authorization_key"  # Base64 encoded authorization key
-export GIGACHAT_MODEL="GigaChat-2"  # опционально, по умолчанию GigaChat-2
+# Установите хотя бы один API ключ
+export GEMINI_API_KEY="ваш_ключ"  # опционально
+export GIGACHAT_AUTH_KEY="ваш_authorization_key"  # опционально
+export PERPLEXITYAI_API_KEY="ваш_ключ"  # опционально (или PERPLEXITY_API_KEY для совместимости)
 make eval
 # или напрямую:
 python -m project.cli.eval_pdfs --input-dir pdf_for_eval --out-dir eval_results
+```
+
+**4. Тестирование LLM провайдеров:**
+```bash
+# Установите API ключи для провайдеров, которые хотите протестировать
+export GEMINI_API_KEY="ваш_ключ"  # опционально
+export GIGACHAT_AUTH_KEY="ваш_authorization_key"  # опционально
+export PERPLEXITYAI_API_KEY="ваш_ключ"  # опционально (или PERPLEXITY_API_KEY для совместимости)
+
+# Запуск всех тестов
+make test
+
+# Запуск только тестов LLM провайдеров
+make test-llm
+
+# Или напрямую через pytest:
+pytest tests/test_llm_providers.py -v -s
 ```
 
 ---
 
 ## Настройка окружения
 
-### Настройка GigaChat API
+### Настройка LLM провайдеров
 
+Система поддерживает роутинг с fallback между несколькими LLM провайдерами:
+1. **Gemini** (приоритет 1) - если доступен
+2. **Perplexity** (приоритет 2) - если доступен
+3. **GigaChat** (приоритет 3) - если доступен
+
+**Настройка Gemini (опционально):**
+```bash
+export GEMINI_API_KEY="ваш_ключ_gemini"
+# Используется модель gemini-2.5-flash-lite
+```
+
+**Настройка GigaChat (опционально):**
 1. Получите Authorization key в [личном кабинете GigaChat](https://developers.sber.ru/portal/products/gigachat)
 2. Установите переменную окружения:
    ```bash
@@ -47,6 +80,16 @@ python -m project.cli.eval_pdfs --input-dir pdf_for_eval --out-dir eval_results
    ```bash
    export GIGACHAT_MODEL="GigaChat-2"  # или другая доступная модель
    ```
+
+**Настройка Perplexity (опционально):**
+```bash
+export PERPLEXITYAI_API_KEY="ваш_ключ_perplexity"
+# или для совместимости:
+export PERPLEXITY_API_KEY="ваш_ключ_perplexity"
+# Используется модель sonar
+```
+
+**Важно:** Установите хотя бы один API ключ. Система автоматически будет использовать доступные провайдеры в порядке приоритета с автоматическим fallback при ошибках.
 
 ### Общие настройки
 
