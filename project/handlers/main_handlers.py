@@ -179,7 +179,14 @@ async def handle_pdf_document(
 
             analysis_json = await analyze_pdf_path(str(temp_path), timeout=120.0)
 
-            title = analysis_json.get("category", {}).get("label", document.file_name)
+            # Используем имя файла, если оно есть, иначе label из категории
+            if document.file_name:
+                # Убираем расширение .pdf
+                title = document.file_name
+                if title.lower().endswith('.pdf'):
+                    title = title[:-4]
+            else:
+                title = analysis_json.get("category", {}).get("label", "Документ")
             reading_time_min = analysis_json.get("volume", {}).get(
                 "reading_time_min", 0
             )
